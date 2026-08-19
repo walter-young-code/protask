@@ -1,0 +1,77 @@
+server:
+  port: 8000
+
+spring:
+  application:
+    name: protask-server
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 生产环境通过 PROTASK_DB_URL / PROTASK_DB_USER / PROTASK_DB_PASSWORD 注入，切勿提交真实凭据
+    url: ${PROTASK_DB_URL:jdbc:mysql://localhost:3306/protask?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${PROTASK_DB_USER:root}
+    password: ${PROTASK_DB_PASSWORD:root}
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: UTC
+  # 国际化：消息文件位于 i18n/messages*.properties，默认中文，
+  # Accept-Language 请求头为 en 时返回英文
+  messages:
+    basename: i18n/messages
+    fallback-to-system-locale: false
+  servlet:
+    multipart:
+      # 单文件最大 5MB（图片分辨率已在前端限制 640×640，此处兜底防滥用）
+      max-file-size: 5MB
+      max-request-size: 5MB
+  mvc:
+    locale: zh_CN
+
+protask:
+  # 统一时区：JVM 默认时区来源，所有时间戳按此时区产生与存储（跨时区一致性要求固定为 UTC）
+  timezone: UTC
+  # 图片上传目录（相对服务运行目录），静态映射到 /api/v1/upload/files/**，公开访问
+  upload-dir: uploads
+  # 非图片附件私有存储目录（不做静态映射，仅通过鉴权下载接口访问）
+  attachment-dir: uploads-attachments
+  auth:
+    # 认证接口限流：单 IP 每分钟最大次数，<=0 关闭限流
+    rate-limit:
+      login: 10
+      register: 5
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+  global-config:
+    banner: false
+
+sa-token:
+  # 请求头中 token 的名称
+  token-name: Authorization
+  # token 有效期（秒），30 天
+  timeout: 2592000
+  # token 最低活跃频率（秒），-1 表示不限制
+  active-timeout: -1
+  # 是否允许同一账号多地并发登录
+  is-concurrent: true
+  # 多次登录是否共用同一个 token
+  is-share: true
+  # 只从请求头读取 token，不从 cookie 读取
+  is-read-header: true
+  # 允许从请求参数读取 token（附件鉴权下载等无法携带请求头的场景使用）
+  is-read-body: true
+  is-read-cookie: false
+  # 请求头 token 前缀，前端传 "Bearer xxx"
+  token-prefix: Bearer
+  # JWT 签名密钥（生产环境必须通过 PROTASK_JWT_SECRET 环境变量注入，默认值仅限本地开发）
+  jwt-secret-key: ${PROTASK_JWT_SECRET:protask-dev-jwt-secret-key-2026}
+  is-log: false
+
+logging:
+  level:
+    com.protask: debug

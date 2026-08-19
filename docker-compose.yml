@@ -1,0 +1,70 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: protask-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: protask
+      TZ: UTC
+    ports:
+      - "3306:3306"
+    volumes:
+      - protask-mysql-data:/var/lib/mysql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+00:00
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build: ./server
+    container_name: protask-server
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # 容器内通过服务名访问 MySQL；生产环境务必替换 PROTASK_JWT_SECRET
+      PROTASK_DB_URL: jdbc:mysql://mysql:3306/protask?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false
+      PROTASK_DB_USER: root
+      PROTASK_DB_PASSWORD: root
+      PROTASK_JWT_SECRET: ${PROTASK_JWT_SECRET:-protask-docker-jwt-secret-change-me}
+      TZ: UTC
+    ports:
+      - "8000:8000"
+    volumes:
+      - protask-uploads:/app/uploads
+      - protask-attachments:/app/uploads-attachments
+
+  webapp:
+    build: ./webapp
+    container_name: protask-webapp
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "3000:80"
+
+  # MCP 服务（stdio 传输）：非常驻服务，由 MCP 客户端通过
+  # docker run -i --rm --network protask_default ... protask-mcp 按需拉起。
+  # 放在 tools profile 下，默认 docker compose up -d 不会启动它，
+  # 仅用于统一构建镜像：docker compose build mcp
+  mcp:
+    build: ./mcp
+    image: protask-mcp
+    profiles: ["tools"]
+    environment:
+      # 容器内通过 compose 内部网络的服务名访问后端
+      PROTASK_BASE_URL: http://server:8000
+    depends_on:
+      - server
+
+volumes:
+  protask-mysql-data:
+  protask-uploads:
+  protask-attachments:

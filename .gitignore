@@ -1,0 +1,32 @@
+# 依赖目录
+node_modules/
+
+# 构建产物
+webapp/dist/
+server/target/
+*.tsbuildinfo
+
+# 运行时上传文件（图片公开目录 + 附件私有目录）
+uploads/
+uploads-attachments/
+
+# 临时测试脚本与截图
+testtmp/
+
+# 日志
+*.log
+logs/
+
+# IDE
+.idea/
+*.iml
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+
+# 环境变量
+.env.local
+.env.*.local
+
+# Maven
+dependency-reduced-pom.xml

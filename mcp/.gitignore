@@ -1,0 +1,7 @@
+node_modules/
+dist/
+dist-bundle/
+creds*.json
+installer/protask-mcp-installer.zip
+installer/pkg/
+installer/output/
