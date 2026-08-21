@@ -147,8 +147,8 @@ class TaskServiceDashboardTest {
     }
 
     @Test
-    void myTasksCountsCreatorAndAssigneeWithoutDuplicate() {
-        // 我创建且负责我的任务只计一次；我创建的任务、指派给我的任务各计一次；他人任务不计
+    void myTasksCountsOnlyAssignee() {
+        // 仅统计当前用户为负责人属性值的任务；纯创建者任务不计入
         Block createdByMe = card(1L, PROJECT_ID, USER_ID, Map.of());
         Block bothMine = card(2L, PROJECT_ID, USER_ID, Map.of("assignee", USER_ID.intValue()));
         Block assignedToMe = card(3L, PROJECT_ID, OTHER_USER_ID, Map.of("assignee", USER_ID.intValue()));
@@ -157,13 +157,13 @@ class TaskServiceDashboardTest {
 
         DashboardVO vo = taskService.getDashboard(USER_ID);
         assertEquals(4, vo.getTotalTasks());
-        assertEquals(3, vo.getMyTasks());
-        assertEquals(3, vo.getMyTaskList().size());
+        assertEquals(2, vo.getMyTasks());
+        assertEquals(2, vo.getMyTaskList().size());
     }
 
     @Test
     void projectWithoutBuiltinPropertiesDoesNotAffectDimensions() {
-        // 空白项目的任务即使携带同名字段也不参与紧急/逾期/状态维度，但计入总数与"我参与"（按创建人）
+        // 空白项目的任务即使携带同名字段也不参与紧急/逾期/状态维度，也不计入"我负责的"（无 member 属性定义）
         Block fakeProps = card(1L, PLAIN_PROJECT_ID, USER_ID, Map.of(
                 "priority", "p0",
                 "status", "done",
@@ -172,7 +172,7 @@ class TaskServiceDashboardTest {
 
         DashboardVO vo = taskService.getDashboard(USER_ID);
         assertEquals(1, vo.getTotalTasks());
-        assertEquals(1, vo.getMyTasks());
+        assertEquals(0, vo.getMyTasks());
         assertEquals(0, vo.getUrgentTasks());
         assertEquals(0, vo.getOverdueTasks());
         assertEquals(0, vo.getDoneTasks());

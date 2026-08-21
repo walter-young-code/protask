@@ -129,14 +129,14 @@ export default {
     listEmpty: 'No tasks',
     stats: {
       total: 'Total Tasks',
-      my: 'My Tasks',
+      my: 'Assigned to Me',
       urgent: 'Urgent',
       overdue: 'Overdue',
       dueSoon: 'Due Soon',
       done: 'Completed',
     },
     lists: {
-      my: 'My Tasks',
+      my: 'Assigned to Me',
       urgent: 'Urgent Tasks',
       overdue: 'Overdue Tasks',
       dueSoon: 'Due Soon',

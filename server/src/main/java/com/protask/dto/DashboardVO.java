@@ -13,7 +13,7 @@ public class DashboardVO {
     /** 可见项目内任务总数 */
     private long totalTasks;
 
-    /** 我参与的任务数（我创建或我负责） */
+    /** 我负责的任务数（当前用户为负责人属性值） */
     private long myTasks;
 
     /** 紧急任务数（内置优先级 P0） */
@@ -28,7 +28,7 @@ public class DashboardVO {
     /** 已完成任务数（内置状态 done） */
     private long doneTasks;
 
-    /** 我参与的任务列表（按更新时间倒序） */
+    /** 我负责的任务列表（按更新时间倒序） */
     private List<DashboardTaskItemVO> myTaskList = List.of();
 
     /** 紧急任务列表（按更新时间倒序） */

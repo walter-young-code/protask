@@ -128,14 +128,14 @@ export default {
     listEmpty: '暂无任务',
     stats: {
       total: '任务总数',
-      my: '我参与的',
+      my: '我负责的',
       urgent: '紧急任务',
       overdue: '逾期任务',
       dueSoon: '即将到期',
       done: '已完成',
     },
     lists: {
-      my: '我参与的',
+      my: '我负责的',
       urgent: '紧急任务',
       overdue: '逾期任务',
       dueSoon: '即将到期',

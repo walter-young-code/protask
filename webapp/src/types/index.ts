@@ -338,7 +338,7 @@ export interface DashboardTaskItemVO {
 /** 仪表盘聚合视图：统计数字 + 分类任务列表 */
 export interface DashboardVO {
   totalTasks: number
-  /** 我参与的任务数（我创建或我负责） */
+  /** 我负责的任务数（当前用户为负责人属性值） */
   myTasks: number
   /** 紧急任务数（内置优先级 P0） */
   urgentTasks: number

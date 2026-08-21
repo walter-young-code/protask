@@ -170,9 +170,8 @@ public class TaskService {
             boolean isDueSoon = !isDone && due != null
                     && !due.isBefore(today) && !due.isAfter(today.plusDays(DUE_SOON_DAYS));
             boolean isUrgent = scope.hasPriority() && PRIORITY_URGENT.equals(asString(properties.get(PROP_PRIORITY)));
-            boolean isMine = userId.equals(card.getCreatedBy())
-                    || (scope.memberPropId() != null
-                    && userId.toString().equals(asString(properties.get(scope.memberPropId()))));
+            boolean isMine = scope.memberPropId() != null
+                    && userId.toString().equals(asString(properties.get(scope.memberPropId())));
 
             if (isMine) {
                 my++;
@@ -198,7 +197,7 @@ public class TaskService {
         vo.setOverdueTasks(overdue);
         vo.setDueSoonTasks(dueSoon);
         vo.setDoneTasks(done);
-        // 逾期/即将到期按截止日期升序（最紧迫在前），紧急/我参与按更新时间倒序
+        // 逾期/即将到期按截止日期升序（最紧迫在前），紧急/我负责按更新时间倒序
         Comparator<DashboardTaskItemVO> byDueDateAsc = Comparator.comparing(DashboardTaskItemVO::getDueDate);
         Comparator<DashboardTaskItemVO> byUpdatedDesc = Comparator.comparing(
                 DashboardTaskItemVO::getUpdatedAt, Comparator.nullsLast(Comparator.reverseOrder()));
