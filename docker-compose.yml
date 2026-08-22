@@ -4,11 +4,15 @@ services:
     container_name: protask-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: ${PROTASK_DB_ROOT_PASSWORD:-protask-strong-pw-change-me}
       MYSQL_DATABASE: protask
       TZ: UTC
-    ports:
-      - "3306:3306"
+    # 安全修复：不再将 3306 暴露到宿主机，仅通过 Docker 内部网络访问
+    expose:
+      - "3306"
+    # ports 已移除，如需宿主机本地调试可临时改回:
+    # ports:
+    #   - "127.0.0.1:3306:3306"   ← 仅绑定 localhost，不暴露到公网
     volumes:
       - protask-mysql-data:/var/lib/mysql
     command:
@@ -16,7 +20,7 @@ services:
       - --collation-server=utf8mb4_unicode_ci
       - --default-time-zone=+00:00
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p\"$${MYSQL_ROOT_PASSWORD}\""]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -32,7 +36,7 @@ services:
       # 容器内通过服务名访问 MySQL；生产环境务必替换 PROTASK_JWT_SECRET
       PROTASK_DB_URL: jdbc:mysql://mysql:3306/protask?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false
       PROTASK_DB_USER: root
-      PROTASK_DB_PASSWORD: root
+      PROTASK_DB_PASSWORD: ${PROTASK_DB_ROOT_PASSWORD:-protask-strong-pw-change-me}
       PROTASK_JWT_SECRET: ${PROTASK_JWT_SECRET:-protask-docker-jwt-secret-change-me}
       TZ: UTC
     ports:
