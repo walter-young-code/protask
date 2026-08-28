@@ -84,9 +84,9 @@ class AdminUserServiceTest {
     void create_successWithDefaults() {
         AdminUserCreateRequest request = new AdminUserCreateRequest();
         request.setUsername("alice");
-        request.setPassword("secret123");
+        request.setPassword("Secret123!");
         when(userMapper.selectCount(any())).thenReturn(0L);
-        when(passwordEncoder.encode("secret123")).thenReturn("encrypted");
+        when(passwordEncoder.encode("Secret123!")).thenReturn("encrypted");
         when(teamMapper.selectList(any())).thenReturn(java.util.List.of());
 
         AdminUserVO vo = adminUserService.create(ADMIN_ID, request);
@@ -188,9 +188,9 @@ class AdminUserServiceTest {
     void resetPassword_encodesAndUpdates() {
         User target = user(OTHER_ID, "user", 1);
         when(userMapper.selectById(OTHER_ID)).thenReturn(target);
-        when(passwordEncoder.encode("new-pass")).thenReturn("encrypted-new");
+        when(passwordEncoder.encode("New-Pass1")).thenReturn("encrypted-new");
 
-        adminUserService.resetPassword(ADMIN_ID, OTHER_ID, "new-pass");
+        adminUserService.resetPassword(ADMIN_ID, OTHER_ID, "New-Pass1");
 
         assertEquals("encrypted-new", target.getPassword());
         verify(userMapper).updateById(target);

@@ -15,6 +15,8 @@ import {
 import * as userApi from '@/api/user'
 import { useUserStore } from '@/stores/user'
 import type { AdminUserVO, TeamVO, UserVO } from '@/types'
+import { passwordStrengthValidator } from '@/utils/passwordStrength'
+import PasswordStrengthBar from '@/components/PasswordStrengthBar.vue'
 
 const { t } = useI18n()
 const userStore = useUserStore()
@@ -57,7 +59,12 @@ const createRules = computed<FormRules>(() => ({
   ],
   password: [
     { required: true, message: t('validation.passwordRequired'), trigger: 'blur' },
-    { min: 6, max: 50, message: t('validation.passwordLength'), trigger: 'blur' },
+    { min: 8, max: 50, message: t('validation.passwordLength'), trigger: 'blur' },
+    {
+      validator: (rule: unknown, value: string, callback: (err?: Error) => void) =>
+        passwordStrengthValidator(rule, value, callback, t('validation.passwordStrengthHint')),
+      trigger: 'blur',
+    },
   ],
 }))
 
@@ -75,7 +82,12 @@ const resetForm = reactive({ password: '', confirmPassword: '' })
 const resetRules = computed<FormRules>(() => ({
   password: [
     { required: true, message: t('validation.passwordRequired'), trigger: 'blur' },
-    { min: 6, max: 50, message: t('validation.passwordLength'), trigger: 'blur' },
+    { min: 8, max: 50, message: t('validation.passwordLength'), trigger: 'blur' },
+    {
+      validator: (rule: unknown, value: string, callback: (err?: Error) => void) =>
+        passwordStrengthValidator(rule, value, callback, t('validation.passwordStrengthHint')),
+      trigger: 'blur',
+    },
   ],
   confirmPassword: [
     {
@@ -384,6 +396,7 @@ onMounted(() => {
         </el-row>
         <el-form-item :label="t('admin.password')" prop="password">
           <el-input v-model="createForm.password" type="password" show-password maxlength="50" />
+          <PasswordStrengthBar :password="createForm.password" />
         </el-form-item>
         <el-form-item :label="t('admin.nickname')" prop="nickname">
           <el-input v-model="createForm.nickname" maxlength="50" />
@@ -478,6 +491,7 @@ onMounted(() => {
       <el-form ref="resetFormRef" :model="resetForm" :rules="resetRules" label-width="80px" @submit.prevent>
         <el-form-item :label="t('admin.password')" prop="password">
           <el-input v-model="resetForm.password" type="password" show-password maxlength="50" />
+          <PasswordStrengthBar :password="resetForm.password" />
         </el-form-item>
         <el-form-item :label="t('admin.confirmPassword')" prop="confirmPassword">
           <el-input v-model="resetForm.confirmPassword" type="password" show-password maxlength="50" />

@@ -6,6 +6,8 @@ import { appMessage } from '@/utils/appMessage'
 import { useI18n } from 'vue-i18n'
 import { register, validateInvite } from '@/api/auth'
 import { useSiteStore } from '@/stores/site'
+import { passwordStrengthValidator } from '@/utils/passwordStrength'
+import PasswordStrengthBar from '@/components/PasswordStrengthBar.vue'
 
 const { t } = useI18n()
 const siteStore = useSiteStore()
@@ -36,7 +38,12 @@ const rules = computed<FormRules>(() => ({
   ],
   password: [
     { required: true, message: t('validation.passwordRequired'), trigger: 'blur' },
-    { min: 6, max: 50, message: t('validation.passwordLength'), trigger: 'blur' },
+    { min: 8, max: 50, message: t('validation.passwordLength'), trigger: 'blur' },
+    {
+      validator: (rule: unknown, value: string, callback: (err?: Error) => void) =>
+        passwordStrengthValidator(rule, value, callback, t('validation.passwordStrengthHint')),
+      trigger: 'blur',
+    },
   ],
   confirmPassword: [
     { required: true, message: t('validation.confirmPasswordRequired'), trigger: 'blur' },
@@ -135,6 +142,7 @@ async function handleRegister() {
               :placeholder="t('register.passwordPlaceholder')"
               show-password
             />
+            <PasswordStrengthBar :password="form.password" />
           </el-form-item>
           <el-form-item prop="confirmPassword">
             <el-input

@@ -4,6 +4,7 @@ import cn.dev33.satoken.stp.SaLoginModel;
 import cn.dev33.satoken.stp.StpUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.protask.common.BusinessException;
+import com.protask.common.PasswordStrengthValidator;
 import com.protask.common.ResultCode;
 import com.protask.dto.ChangePasswordRequest;
 import com.protask.dto.InviteVO;
@@ -53,6 +54,7 @@ public class AuthService {
         if (count != null && count > 0) {
             throw new BusinessException(ResultCode.CONFLICT, "auth.username.exists");
         }
+        PasswordStrengthValidator.validate(request.getPassword());
         User user = new User();
         user.setUsername(request.getUsername());
         user.setPassword(passwordEncoder.encode(request.getPassword()));
@@ -172,6 +174,7 @@ public class AuthService {
         if (request.getOldPassword().equals(request.getNewPassword())) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "auth.password.sameAsOld");
         }
+        PasswordStrengthValidator.validate(request.getNewPassword());
         user.setPassword(passwordEncoder.encode(request.getNewPassword()));
         user.setPasswordVersion(passwordVersion(user) + 1);
         userMapper.updateById(user);

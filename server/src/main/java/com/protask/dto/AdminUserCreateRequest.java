@@ -17,7 +17,7 @@ public class AdminUserCreateRequest {
     private String username;
 
     @NotBlank(message = "{validation.password.notBlank}")
-    @Size(min = 6, max = 50, message = "{validation.password.size}")
+    @Size(min = 8, max = 50, message = "{validation.password.size}")
     private String password;
 
     @Size(max = 50, message = "{validation.nickname.size}")

@@ -58,6 +58,7 @@ declare module 'vue' {
     IconPicker: typeof import('./components/IconPicker.vue')['default']
     KanbanView: typeof import('./components/views/KanbanView.vue')['default']
     MemberDialog: typeof import('./components/MemberDialog.vue')['default']
+    PasswordStrengthBar: typeof import('./components/PasswordStrengthBar.vue')['default']
     ProjectDialog: typeof import('./components/ProjectDialog.vue')['default']
     PropertyMenu: typeof import('./components/PropertyMenu.vue')['default']
     PropertyValueInput: typeof import('./components/PropertyValueInput.vue')['default']

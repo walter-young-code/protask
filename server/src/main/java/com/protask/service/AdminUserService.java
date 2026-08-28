@@ -3,6 +3,7 @@ package com.protask.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.protask.common.BusinessException;
+import com.protask.common.PasswordStrengthValidator;
 import com.protask.common.ResultCode;
 import com.protask.common.SqlUtil;
 import com.protask.dto.AdminUserCreateRequest;
@@ -101,6 +102,7 @@ public class AdminUserService {
         if (status != 0 && status != 1) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "admin.statusInvalid");
         }
+        PasswordStrengthValidator.validate(request.getPassword());
         User user = new User();
         user.setUsername(request.getUsername());
         user.setPassword(passwordEncoder.encode(request.getPassword()));
@@ -172,6 +174,7 @@ public class AdminUserService {
      */
     public void resetPassword(Long operatorId, Long id, String password) {
         requireAdmin(operatorId);
+        PasswordStrengthValidator.validate(password);
         User user = requireUser(id);
         user.setPassword(passwordEncoder.encode(password));
         // 递增密码版本号：被重置用户的旧 token 立即失效

@@ -6,6 +6,8 @@ import { Lock } from '@element-plus/icons-vue'
 import { appMessage } from '@/utils/appMessage'
 import * as authApi from '@/api/auth'
 import { useUserStore } from '@/stores/user'
+import { passwordStrengthValidator } from '@/utils/passwordStrength'
+import PasswordStrengthBar from '@/components/PasswordStrengthBar.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -27,14 +29,14 @@ const form = reactive({
   confirmPassword: '',
 })
 
-/** 表单校验规则（新密码至少 6 位，确认密码需一致） */
+/** 表单校验规则（新密码至少 8 位且满足强度要求，确认密码需一致） */
 const rules = {
   oldPassword: [
     { required: true, message: () => t('password.oldRequired'), trigger: 'blur' },
   ],
   newPassword: [
     { required: true, message: () => t('password.newRequired'), trigger: 'blur' },
-    { min: 6, max: 50, message: () => t('password.lengthHint'), trigger: 'blur' },
+    { min: 8, max: 50, message: () => t('password.lengthHint'), trigger: 'blur' },
     {
       validator: (_rule: unknown, value: string, callback: (err?: Error) => void) => {
         if (value && value === form.oldPassword) {
@@ -43,6 +45,11 @@ const rules = {
           callback()
         }
       },
+      trigger: 'blur',
+    },
+    {
+      validator: (_rule: unknown, value: string, callback: (err?: Error) => void) =>
+        passwordStrengthValidator(_rule, value, callback, t('validation.passwordStrengthHint')),
       trigger: 'blur',
     },
   ],
@@ -113,6 +120,7 @@ function close() {
           :prefix-icon="Lock"
           :placeholder="t('password.newPlaceholder')"
         />
+        <PasswordStrengthBar :password="form.newPassword" />
       </el-form-item>
       <el-form-item :label="t('password.confirmPassword')" prop="confirmPassword">
         <el-input
