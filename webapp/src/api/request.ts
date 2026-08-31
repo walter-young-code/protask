@@ -3,6 +3,7 @@ import { appMessage } from '@/utils/appMessage'
 import router from '@/router'
 import i18n from '@/i18n'
 import { useShareStore } from '@/stores/share'
+import { useUserStore } from '@/stores/user'
 import type { ApiResult } from '@/types'
 
 /** Axios 实例：baseURL 走 Vite 代理 -> 后端 8000 端口 */
@@ -28,8 +29,8 @@ instance.interceptors.request.use((config) => {
 
 function handleUnauthorized() {
   localStorage.removeItem('protask_token')
-  // 同步清理内存中的用户状态（动态导入避免与 store -> api -> request 的循环依赖）
-  void import('@/stores/user').then(({ useUserStore }) => useUserStore().clear())
+  // 同步清理内存中的用户状态
+  useUserStore().clear()
   if (router.currentRoute.value.name !== 'login') {
     router.push({ name: 'login' })
   }
