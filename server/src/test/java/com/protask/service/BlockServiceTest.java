@@ -8,6 +8,7 @@ import com.protask.entity.User;
 import com.protask.mapper.BlockMapper;
 import com.protask.mapper.UserMapper;
 import com.protask.permission.PermissionService;
+import com.protask.permission.ProjectPermission;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -111,6 +112,30 @@ class BlockServiceTest {
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> blockService.patchBlock(USER_ID, BLOCK_ID, new BlockPatchRequest()));
         assertEquals("block.notFound", ex.getMessageKey());
+    }
+
+    @Test
+    void patchOwnCommentRequiresCommentPermission() {
+        Block comment = textBlock();
+        comment.setType(BlockTypes.COMMENT);
+        comment.setCreatedBy(USER_ID);
+        when(blockMapper.selectById(BLOCK_ID)).thenReturn(comment);
+
+        blockService.patchBlock(USER_ID, BLOCK_ID, new BlockPatchRequest());
+
+        verify(permissionService).checkPermission(USER_ID, PROJECT_ID, ProjectPermission.COMMENT_PROJECT_CARDS);
+    }
+
+    @Test
+    void patchOthersCommentRequiresDeleteOthersCommentsPermission() {
+        Block comment = textBlock();
+        comment.setType(BlockTypes.COMMENT);
+        comment.setCreatedBy(99L);
+        when(blockMapper.selectById(BLOCK_ID)).thenReturn(comment);
+
+        blockService.patchBlock(USER_ID, BLOCK_ID, new BlockPatchRequest());
+
+        verify(permissionService).checkPermission(USER_ID, PROJECT_ID, ProjectPermission.DELETE_OTHERS_COMMENTS);
     }
 
     @Test

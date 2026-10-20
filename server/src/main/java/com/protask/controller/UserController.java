@@ -1,5 +1,6 @@
 package com.protask.controller;
 
+import cn.dev33.satoken.stp.StpUtil;
 import com.protask.common.Result;
 import com.protask.dto.UserVO;
 import com.protask.service.UserService;
@@ -20,9 +21,9 @@ public class UserController {
 
     private final UserService userService;
 
-    /** 查询所有启用状态的用户（用于任务分配下拉） */
+    /** 查询所有启用状态的用户（用于任务分配下拉；非管理员不返回 email/role） */
     @GetMapping
     public Result<List<UserVO>> listUsers() {
-        return Result.ok(userService.listActiveUsers());
+        return Result.ok(userService.listActiveUsers(StpUtil.getLoginIdAsLong()));
     }
 }

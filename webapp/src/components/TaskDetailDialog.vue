@@ -97,9 +97,22 @@ function isPdfAttachment(att: AttachmentVO): boolean {
   return att.contentType === 'application/pdf' || att.originalName.toLowerCase().endsWith('.pdf')
 }
 
-/** 新标签页在线打开 PDF（鉴权下载接口附加 token 参数，浏览器原生渲染） */
-function openPdfPreview(att: AttachmentVO) {
-  window.open(attachmentApi.withAuthToken(att.url), '_blank', 'noopener')
+/** 新标签页在线打开 PDF（请求头鉴权获取 Blob 后打开，token 不出现在 URL） */
+async function openPdfPreview(att: AttachmentVO) {
+  try {
+    await attachmentApi.previewAttachment(att.url)
+  } catch {
+    // 错误提示由请求拦截器统一处理
+  }
+}
+
+/** 下载附件（请求头鉴权后通过 Blob 保存，token 不出现在 URL） */
+async function downloadAttachment(att: AttachmentVO) {
+  try {
+    await attachmentApi.downloadAttachment(att.url, att.originalName)
+  } catch {
+    // 错误提示由请求拦截器统一处理
+  }
 }
 
 /** 加载任务附件列表 */
@@ -844,9 +857,9 @@ function formatTime(value?: string) {
               <a
                 v-if="commentable"
                 class="attachment-download"
-                :href="attachmentApi.withAuthToken(att.url)"
-                :download="att.originalName"
+                :href="att.url"
                 :title="t('attachment.download')"
+                @click.prevent="downloadAttachment(att)"
               >
                 <el-icon><Download /></el-icon>
                 <span>{{ t('attachment.download') }}</span>

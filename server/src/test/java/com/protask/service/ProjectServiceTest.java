@@ -287,9 +287,11 @@ class ProjectServiceTest {
         template.setIsTemplate(true);
         when(projectMapper.selectList(any())).thenReturn(List.of(template));
         Block card = new Block();
+        card.setProjectId(1L);
         card.setTitle("官网注册客户跟进");
         card.setFields(Map.of("icon", "📇", "properties", Map.of("stage", "following")));
-        when(blockService.listCards(1L)).thenReturn(List.of(card));
+        // 批量查询模板示例卡片（listTemplates 已不再逐模板调用 listCards）
+        when(blockMapper.selectList(any())).thenReturn(List.of(card));
 
         List<ProjectTemplateVO> vos = projectService.listTemplates();
 

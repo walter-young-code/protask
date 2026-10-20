@@ -20,6 +20,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
@@ -45,7 +46,11 @@ public class AuthService {
 
     /**
      * 用户注册（需携带有效的邀请链接凭证）。
+     *
+     * 邀请凭证采用「条件更新」原子消费：并发注册时仅一个请求能把 status 从 0 改为 1，
+     * 其余请求更新行数为 0，事务回滚避免同一一次性链接注册出多个账号。
      */
+    @Transactional(rollbackFor = Exception.class)
     public UserVO register(RegisterRequest request) {
         // 公开注册已关闭：仅持有效邀请链接的用户可注册，注册成功后凭证作废
         InviteToken invite = validateInvite(request.getInviteToken());
@@ -65,11 +70,17 @@ public class AuthService {
         user.setRole("user");
         user.setStatus(1);
         userMapper.insert(user);
-        // 标记邀请凭证已使用，防止同一链接重复注册
-        invite.setStatus(1);
-        invite.setUsedAt(LocalDateTime.now());
-        invite.setUsedBy(user.getId());
-        inviteTokenMapper.updateById(invite);
+        // 原子消费邀请凭证：status 必须仍为 0，否则说明已被并发请求使用，回滚本次注册
+        InviteToken consume = new InviteToken();
+        consume.setStatus(1);
+        consume.setUsedAt(LocalDateTime.now());
+        consume.setUsedBy(user.getId());
+        int consumed = inviteTokenMapper.update(consume, new LambdaQueryWrapper<InviteToken>()
+                .eq(InviteToken::getId, invite.getId())
+                .eq(InviteToken::getStatus, 0));
+        if (consumed == 0) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "auth.invite.used");
+        }
         return toVO(user);
     }
 

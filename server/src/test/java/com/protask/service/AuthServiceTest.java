@@ -145,18 +145,36 @@ class AuthServiceTest {
             ((User) invocation.getArgument(0)).setId(USER_ID);
             return 1;
         });
+        // 模拟原子消费邀请凭证的条件更新成功（影响行数 1）
+        when(inviteTokenMapper.update(any(), any())).thenReturn(1);
 
         authService.register(registerRequest("bob"));
 
         ArgumentCaptor<User> userCaptor = ArgumentCaptor.forClass(User.class);
         verify(userMapper).insert(userCaptor.capture());
         assertEquals("bob", userCaptor.getValue().getUsername());
-        // 注册成功后邀请凭证被标记为已使用，并记录注册用户
+        // 注册成功后邀请凭证被原子消费：条件更新 status=0 的记录为已使用
         ArgumentCaptor<InviteToken> inviteCaptor = ArgumentCaptor.forClass(InviteToken.class);
-        verify(inviteTokenMapper).updateById(inviteCaptor.capture());
+        verify(inviteTokenMapper).update(inviteCaptor.capture(), any());
         assertEquals(1, inviteCaptor.getValue().getStatus());
         assertEquals(USER_ID, inviteCaptor.getValue().getUsedBy());
         assertNotNull(inviteCaptor.getValue().getUsedAt());
+    }
+
+    @Test
+    void registerRejectsWhenInviteConsumedConcurrently() {
+        when(inviteTokenMapper.selectOne(any())).thenReturn(validInvite());
+        when(userMapper.selectCount(any())).thenReturn(0L);
+        when(userMapper.insert(any(User.class))).thenAnswer(invocation -> {
+            ((User) invocation.getArgument(0)).setId(USER_ID);
+            return 1;
+        });
+        // 条件更新影响行数为 0：凭证已被并发请求消费
+        when(inviteTokenMapper.update(any(), any())).thenReturn(0);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> authService.register(registerRequest("bob")));
+        assertEquals("auth.invite.used", ex.getMessageKey());
     }
 
     @Test

@@ -9,7 +9,8 @@ RUN mvn -B -q package -DskipTests
 
 # ---- 运行阶段：轻量 JRE ----
 FROM eclipse-temurin:17-jre
-ENV TZ=Asia/Shanghai
+# 统一 UTC，与 application.yml / docker-compose 保持一致
+ENV TZ=UTC
 WORKDIR /app
 COPY --from=build /app/target/protask-server.jar app.jar
 # 图片上传目录（公开静态映射）与附件私有目录

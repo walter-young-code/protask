@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
@@ -22,6 +22,8 @@ const searching = ref(false)
 const results = ref<TaskVO[]>([])
 const searched = ref(false)
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
+// 请求序号：关键字变化后丢弃在途的旧响应，避免慢请求覆盖新结果
+let searchSeq = 0
 
 /** 按项目分组展示搜索结果 */
 const grouped = computed(() => {
@@ -34,9 +36,18 @@ const grouped = computed(() => {
   return [...groups.entries()]
 })
 
+/** 取消尚未触发的防抖搜索 */
+function stopDebounce() {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer)
+    debounceTimer = undefined
+  }
+}
+
 /** 输入防抖 300ms 后搜索 */
 watch(keyword, (value) => {
-  if (debounceTimer) clearTimeout(debounceTimer)
+  stopDebounce()
+  searchSeq++
   const kw = value.trim()
   if (!kw) {
     results.value = []
@@ -44,12 +55,15 @@ watch(keyword, (value) => {
     return
   }
   debounceTimer = setTimeout(async () => {
+    const seq = ++searchSeq
     searching.value = true
     try {
-      results.value = await taskApi.searchTasks(kw)
+      const items = await taskApi.searchTasks(kw)
+      if (seq !== searchSeq) return
+      results.value = items
       searched.value = true
     } finally {
-      searching.value = false
+      if (seq === searchSeq) searching.value = false
     }
   }, 300)
 })
@@ -67,8 +81,11 @@ watch(
 )
 
 function close() {
+  stopDebounce()
   emit('update:modelValue', false)
 }
+
+onBeforeUnmount(stopDebounce)
 
 /** 点击结果：跳转项目详情并自动打开任务卡片 */
 function handleSelect(task: TaskVO) {

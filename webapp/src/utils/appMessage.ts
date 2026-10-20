@@ -20,8 +20,8 @@ let nextId = 1
 /** 最大同时展示条数：超出移除最旧，防止面板无限膨胀 */
 const MAX_MESSAGES = 8
 
-/** 自动关闭时长：3 秒内无人手动关闭则自动消失 */
-export const AUTO_CLOSE_MS = 3000
+/** 自动关闭时长：1 秒内无人手动关闭则自动消失 */
+export const AUTO_CLOSE_MS = 1000
 
 function clearTimer(id: number) {
   const timer = timers.get(id)
@@ -41,7 +41,7 @@ function closeMessage(id: number) {
 function push(type: AppMessageType, content: string) {
   const id = nextId++
   messages.push({ id, type, content })
-  // 3 秒后自动关闭；若期间被手动关闭，定时器在 closeMessage 中清除
+  // 1 秒后自动关闭；若期间被手动关闭，定时器在 closeMessage 中清除
   timers.set(id, setTimeout(() => closeMessage(id), AUTO_CLOSE_MS))
   if (messages.length > MAX_MESSAGES) {
     const removed = messages.shift()
@@ -50,7 +50,7 @@ function push(type: AppMessageType, content: string) {
 }
 
 /**
- * 统一消息提示：右上角弹窗堆叠展示，3 秒内无人关闭自动消失，也可手动关闭。
+ * 统一消息提示：顶部居中弹窗堆叠展示，1 秒内无人关闭自动消失，也可手动关闭。
  * 替代 ElMessage（3 秒闪现后自动消失，用户难以看清）。
  */
 export const appMessage = {

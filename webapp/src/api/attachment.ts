@@ -1,4 +1,4 @@
-import { del, get, post } from './request'
+import { del, get, getBlob, post } from './request'
 
 /** 附件视图（与后端 AttachmentVO 对应） */
 export interface AttachmentVO {
@@ -15,13 +15,28 @@ export interface AttachmentVO {
 }
 
 /**
- * 为鉴权下载 URL 附加 token 参数：浏览器新标签页/下载链接无法携带 Authorization 头，
- * 后端 sa-token 支持从同名请求参数读取 token；公开静态地址原样返回。
+ * 下载附件：通过 Authorization 请求头鉴权后以 Blob 保存，
+ * 避免把 JWT 拼进 URL（浏览器历史/网关日志/Referer 泄露）。
  */
-export function withAuthToken(url: string): string {
-  if (!url.includes('/download')) return url
-  const token = localStorage.getItem('protask_token')
-  return token ? `${url}?Authorization=${encodeURIComponent(`Bearer ${token}`)}` : url
+export async function downloadAttachment(url: string, filename: string): Promise<void> {
+  const blob = await getBlob(url)
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = objectUrl
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(objectUrl)
+}
+
+/** 新标签页预览附件（PDF）：请求头鉴权后使用 object URL 打开 */
+export async function previewAttachment(url: string): Promise<void> {
+  const blob = await getBlob(url)
+  const objectUrl = URL.createObjectURL(blob)
+  window.open(objectUrl, '_blank', 'noopener')
+  // 延迟释放，避免新标签页加载完成前 URL 失效
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
 }
 
 /** 查询任务附件列表 */

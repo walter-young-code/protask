@@ -46,11 +46,13 @@ const typeMeta: Record<AppMessageType, { icon: typeof SuccessFilled; color: stri
 </template>
 
 <style scoped>
-/* 消息弹窗：右上角固定，有消息时出现，5 秒未手动关闭则自动消失 */
+/* 消息弹窗：顶部居中固定，有消息时出现，1 秒未手动关闭则自动消失 */
 .app-message-panel {
   position: fixed;
   top: 20px;
-  right: 20px;
+  left: 50%;
+  /* 使用独立 translate 属性水平居中，避免与入场 transform 动画互相覆盖 */
+  translate: -50% 0;
   z-index: 3000;
   width: 360px;
   max-height: 70vh;
@@ -126,7 +128,7 @@ const typeMeta: Record<AppMessageType, { icon: typeof SuccessFilled; color: stri
   color: var(--app-text-regular);
 }
 
-/* 面板整体出现动画 */
+/* 面板整体出现动画：由上向下弹出 */
 .app-message-panel-enter-active,
 .app-message-panel-leave-active {
   transition: opacity 0.2s, transform 0.2s;
@@ -135,10 +137,10 @@ const typeMeta: Record<AppMessageType, { icon: typeof SuccessFilled; color: stri
 .app-message-panel-enter-from,
 .app-message-panel-leave-to {
   opacity: 0;
-  transform: translateX(16px);
+  transform: translateY(-16px);
 }
 
-/* 单条消息进出动画 */
+/* 单条消息进出动画：由上向下弹出 */
 .app-message-enter-active,
 .app-message-leave-active {
   transition: opacity 0.2s, transform 0.2s;
@@ -147,6 +149,6 @@ const typeMeta: Record<AppMessageType, { icon: typeof SuccessFilled; color: stri
 .app-message-enter-from,
 .app-message-leave-to {
   opacity: 0;
-  transform: translateX(16px);
+  transform: translateY(-8px);
 }
 </style>

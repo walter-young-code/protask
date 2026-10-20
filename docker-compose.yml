@@ -4,7 +4,7 @@ services:
     container_name: protask-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${PROTASK_DB_ROOT_PASSWORD:-protask-strong-pw-change-me}
+      MYSQL_ROOT_PASSWORD: ${PROTASK_DB_ROOT_PASSWORD:?PROTASK_DB_ROOT_PASSWORD 必须在 .env 中设置}
       MYSQL_DATABASE: protask
       TZ: UTC
     # 仅通过 Docker 内部网络访问，同时为宿主机本地调试
@@ -33,11 +33,13 @@ services:
       mysql:
         condition: service_healthy
     environment:
-      # 容器内通过服务名访问 MySQL；生产环境务必替换 PROTASK_JWT_SECRET
+      # 容器内通过服务名访问 MySQL；密钥必须由 .env 显式注入，禁止使用仓库中的示例默认值
       PROTASK_DB_URL: jdbc:mysql://mysql:3306/protask?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false
       PROTASK_DB_USER: root
-      PROTASK_DB_PASSWORD: ${PROTASK_DB_ROOT_PASSWORD:-protask-strong-pw-change-me}
-      PROTASK_JWT_SECRET: ${PROTASK_JWT_SECRET:-protask-docker-jwt-secret-change-me}
+      PROTASK_DB_PASSWORD: ${PROTASK_DB_ROOT_PASSWORD:?PROTASK_DB_ROOT_PASSWORD 必须在 .env 中设置}
+      PROTASK_JWT_SECRET: ${PROTASK_JWT_SECRET:?PROTASK_JWT_SECRET 必须在 .env 中设置（可用 openssl rand -base64 48 生成）}
+      # 请求均经 webapp(nginx) 反向代理，信任其追加的真实客户端 IP
+      PROTASK_RATE_LIMIT_TRUST_PROXY: "true"
       TZ: UTC
     ports:
       - "8000:8000"

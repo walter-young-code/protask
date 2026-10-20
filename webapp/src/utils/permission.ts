@@ -18,9 +18,6 @@ const levelOf = (role?: string): number =>
 export const hasRole = (role: string | undefined, min: ProjectRole): boolean =>
   levelOf(role) >= ROLE_LEVEL[min]
 
-/** 可查看项目（任意角色，含公开项目非成员的 viewer 语义由后端下发 myRole 决定） */
-export const canView = (project?: ProjectVO): boolean => levelOf(project?.myRole) >= 1
-
 /** 可评论任务卡片 */
 export const canComment = (project?: ProjectVO): boolean => hasRole(project?.myRole, 'commenter')
 

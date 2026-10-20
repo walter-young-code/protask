@@ -53,6 +53,7 @@ import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -133,7 +134,10 @@ public class ProjectService {
                 .eq(Project::getIsTemplate, true)
                 .isNull(Project::getDeleteAt)
                 .orderByAsc(Project::getId));
-        return templates.stream().map(this::toTemplateVO).collect(Collectors.toList());
+        Map<Long, List<Block>> cardsByTemplate = loadTemplateCards(templates);
+        return templates.stream()
+                .map(t -> toTemplateVO(t, cardsByTemplate.getOrDefault(t.getId(), List.of())))
+                .collect(Collectors.toList());
     }
 
     /**
@@ -152,7 +156,9 @@ public class ProjectService {
         long pageNo = page == null || page < 1 ? 1 : page;
         long pageSize = size == null || size < 1 ? 10 : Math.min(size, MAX_PAGE_SIZE);
         Page<Project> result = projectMapper.selectPage(new Page<>(pageNo, pageSize), wrapper);
-        return PageResult.of(result, this::toTemplateVO);
+        Map<Long, List<Block>> cardsByTemplate = loadTemplateCards(result.getRecords());
+        return PageResult.of(result,
+                t -> toTemplateVO(t, cardsByTemplate.getOrDefault(t.getId(), List.of())));
     }
 
     /**
@@ -797,12 +803,14 @@ public class ProjectService {
         }
         List<ProjectMember> members = projectMemberMapper.selectList(
                 new LambdaQueryWrapper<ProjectMember>().eq(ProjectMember::getProjectId, projectId));
+        // 批量查询成员用户信息，避免逐个成员查询（N+1）
+        Map<Long, User> users = loadUsers(members.stream().map(ProjectMember::getUserId).toList());
         return members.stream().map(m -> {
             ProjectMemberVO vo = new ProjectMemberVO();
             vo.setUserId(m.getUserId());
             vo.setRole(m.getRole());
             vo.setJoinedAt(m.getJoinedAt());
-            User user = userMapper.selectById(m.getUserId());
+            User user = users.get(m.getUserId());
             if (user != null) {
                 vo.setUsername(user.getUsername());
                 vo.setNickname(user.getNickname());
@@ -934,8 +942,13 @@ public class ProjectService {
         return template;
     }
 
-    /** 模板项目转模板库视图（含示例卡片） */
+    /** 单模板场景：查询示例卡片后转视图 */
     private ProjectTemplateVO toTemplateVO(Project template) {
+        return toTemplateVO(template, blockService.listCards(template.getId()));
+    }
+
+    /** 模板项目转模板库视图（含示例卡片） */
+    private ProjectTemplateVO toTemplateVO(Project template, List<Block> sampleCards) {
         ProjectTemplateVO vo = new ProjectTemplateVO();
         vo.setId(template.getId());
         vo.setName(template.getName());
@@ -943,10 +956,40 @@ public class ProjectService {
         vo.setIcon(template.getIcon());
         vo.setCardProperties(template.getCardProperties());
         vo.setCreatedAt(template.getCreatedAt());
-        vo.setSampleCards(blockService.listCards(template.getId()).stream()
+        vo.setSampleCards(sampleCards.stream()
                 .map(this::toSampleCard)
                 .collect(Collectors.toList()));
         return vo;
+    }
+
+    /** 一次性查询多个模板的示例卡片（排除已删除），按模板 ID 分组 */
+    private Map<Long, List<Block>> loadTemplateCards(List<Project> templates) {
+        if (templates.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> templateIds = templates.stream().map(Project::getId).toList();
+        List<Block> cards = blockMapper.selectList(new LambdaQueryWrapper<Block>()
+                .in(Block::getProjectId, templateIds)
+                .eq(Block::getType, BlockTypes.CARD)
+                .isNull(Block::getDeleteAt)
+                .orderByAsc(Block::getCreateAt));
+        Map<Long, List<Block>> grouped = new HashMap<>();
+        for (Block card : cards) {
+            grouped.computeIfAbsent(card.getProjectId(), key -> new ArrayList<>()).add(card);
+        }
+        return grouped;
+    }
+
+    /** 批量查询用户（成员列表等场景避免 N+1） */
+    private Map<Long, User> loadUsers(List<Long> userIds) {
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, User> users = new HashMap<>();
+        for (User user : userMapper.selectBatchIds(userIds)) {
+            users.put(user.getId(), user);
+        }
+        return users;
     }
 
     /** card 块转模板示例卡片视图 */
@@ -966,6 +1009,10 @@ public class ProjectService {
     }
 
     private void checkAdmin(Long userId, Long projectId) {
+        // 与 PermissionService 权限矩阵一致：系统管理员对所有项目拥有管理权限
+        if (permissionService.isSystemAdmin(userId)) {
+            return;
+        }
         ProjectRole role = permissionService.getEffectiveRole(userId, projectId);
         if (!role.isAtLeast(ProjectRole.ADMIN)) {
             throw new BusinessException(ResultCode.FORBIDDEN, "project.permissionDenied");

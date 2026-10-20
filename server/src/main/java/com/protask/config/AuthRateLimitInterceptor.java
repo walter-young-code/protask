@@ -12,6 +12,7 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 认证接口限流拦截器：按客户端 IP 对登录/注册接口做固定窗口限流，
@@ -34,8 +35,15 @@ public class AuthRateLimitInterceptor implements HandlerInterceptor {
     @Value("${protask.auth.rate-limit.register:5}")
     private int registerLimit;
 
+    /** 是否信任反向代理追加的 X-Forwarded-For（仅当请求必经可信代理时开启） */
+    @Value("${protask.auth.rate-limit.trust-proxy:false}")
+    private boolean trustProxy;
+
     /** IP -> 当前窗口计数器（窗口起点 + 次数） */
     private final Map<String, Window> counters = new ConcurrentHashMap<>();
+
+    /** 上次定期清理时间（毫秒），避免计数表随伪造 IP 无限增长 */
+    private final AtomicLong lastCleanupAt = new AtomicLong();
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
@@ -59,18 +67,29 @@ public class AuthRateLimitInterceptor implements HandlerInterceptor {
         if (limit <= 0) {
             return true;
         }
-        if (counters.size() > CLEANUP_THRESHOLD) {
-            cleanup();
-        }
         long now = System.currentTimeMillis();
+        maybeCleanup(now);
         Window window = counters.compute(ip, (key, existing) ->
                 existing != null && now - existing.windowStart < WINDOW_MS ? existing : new Window(now));
         return window.count.incrementAndGet() <= limit;
     }
 
+    /** 定期清理过期窗口：每分钟最多执行一次，同时兼顾计数表过大时的强制清理 */
+    private void maybeCleanup(long now) {
+        long last = lastCleanupAt.get();
+        if (now - last >= WINDOW_MS) {
+            if (lastCleanupAt.compareAndSet(last, now)) {
+                cleanup(now);
+            }
+            return;
+        }
+        if (counters.size() > CLEANUP_THRESHOLD) {
+            cleanup(now);
+        }
+    }
+
     /** 清理过期窗口，防止计数表无限增长 */
-    private void cleanup() {
-        long now = System.currentTimeMillis();
+    private void cleanup(long now) {
         Iterator<Map.Entry<String, Window>> it = counters.entrySet().iterator();
         while (it.hasNext()) {
             if (now - it.next().getValue().windowStart >= WINDOW_MS) {
@@ -79,11 +98,21 @@ public class AuthRateLimitInterceptor implements HandlerInterceptor {
         }
     }
 
-    /** 客户端真实 IP（优先取反向代理头） */
+    /**
+     * 客户端真实 IP：
+     * - 直连部署（trust-proxy=false）使用 remoteAddr，避免客户端伪造 X-Forwarded-For 绕过限流；
+     * - 反向代理部署（trust-proxy=true）取 X-Forwarded-For 末尾地址：
+     *   nginx 的 $proxy_add_x_forwarded_for 会把真实客户端地址追加到末尾，
+     *   客户端自带的伪造值只可能出现在前面。
+     */
     private String clientIp(HttpServletRequest request) {
+        if (!trustProxy) {
+            return request.getRemoteAddr();
+        }
         String forwarded = request.getHeader("X-Forwarded-For");
         if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
+            String[] parts = forwarded.split(",");
+            return parts[parts.length - 1].trim();
         }
         return request.getRemoteAddr();
     }

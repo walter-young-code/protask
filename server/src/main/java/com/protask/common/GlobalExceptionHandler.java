@@ -5,6 +5,7 @@ import cn.dev33.satoken.exception.NotPermissionException;
 import cn.dev33.satoken.exception.NotRoleException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -50,6 +51,12 @@ public class GlobalExceptionHandler {
                 ? fieldError.getDefaultMessage()
                 : MessageUtil.get("common.validationFailed");
         return Result.fail(ResultCode.BAD_REQUEST.getCode(), message);
+    }
+
+    /** 请求体无法解析（畸形 JSON / 类型不匹配）：返回 400 而非兜底 500 */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public Result<Void> handleNotReadable(HttpMessageNotReadableException e) {
+        return Result.fail(ResultCode.BAD_REQUEST.getCode(), MessageUtil.get("common.validationFailed"));
     }
 
     /** 上传文件超过大小限制：提示上限值，友好提示而非兜底 500 */

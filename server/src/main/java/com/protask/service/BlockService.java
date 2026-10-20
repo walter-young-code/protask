@@ -89,13 +89,22 @@ public class BlockService {
     }
 
     /**
-     * 局部更新块（合并 updatedFields、移除 deletedFields），需卡片管理权限。
+     * 局部更新块（合并 updatedFields、移除 deletedFields）。
+     * 权限与删除对齐：改写他人评论需 DELETE_OTHERS_COMMENTS，
+     * 编辑自己评论需评论权限，其余块需卡片管理权限。
      */
     @Transactional(rollbackFor = Exception.class)
     public BlockVO patchBlock(Long userId, Long blockId, BlockPatchRequest request) {
         Block block = getBlock(blockId);
-        permissionService.checkPermission(userId, block.getProjectId(),
-                ProjectPermission.MANAGE_PROJECT_CARDS);
+        ProjectPermission required;
+        if (BlockTypes.COMMENT.equals(block.getType()) && !userId.equals(block.getCreatedBy())) {
+            required = ProjectPermission.DELETE_OTHERS_COMMENTS;
+        } else if (BlockTypes.COMMENT.equals(block.getType())) {
+            required = ProjectPermission.COMMENT_PROJECT_CARDS;
+        } else {
+            required = ProjectPermission.MANAGE_PROJECT_CARDS;
+        }
+        permissionService.checkPermission(userId, block.getProjectId(), required);
 
         if (request.getParentId() != null) {
             validateParent(block.getProjectId(), request.getParentId());

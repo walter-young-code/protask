@@ -31,6 +31,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -155,9 +156,12 @@ public class AttachmentService {
         List<Attachment> attachments = attachmentMapper.selectList(new LambdaQueryWrapper<Attachment>()
                 .eq(Attachment::getTaskId, taskId)
                 .orderByDesc(Attachment::getCreateAt));
+        // 批量查询上传人昵称，避免逐条附件查询用户（N+1）
+        Map<Long, String> nicknames = loadNicknames(attachments.stream()
+                .map(Attachment::getCreatedBy).filter(Objects::nonNull).distinct().toList());
         List<AttachmentVO> vos = new ArrayList<>();
         for (Attachment attachment : attachments) {
-            vos.add(toVO(attachment));
+            vos.add(toVO(attachment, nicknames.get(attachment.getCreatedBy())));
         }
         return vos;
     }
@@ -380,6 +384,12 @@ public class AttachmentService {
     }
 
     private AttachmentVO toVO(Attachment attachment) {
+        User creator = attachment.getCreatedBy() != null
+                ? userMapper.selectById(attachment.getCreatedBy()) : null;
+        return toVO(attachment, creator != null ? creator.getNickname() : null);
+    }
+
+    private AttachmentVO toVO(Attachment attachment, String createdByName) {
         AttachmentVO vo = new AttachmentVO();
         vo.setId(attachment.getId());
         vo.setTaskId(attachment.getTaskId());
@@ -394,10 +404,19 @@ public class AttachmentService {
         vo.setCreatedBy(attachment.getCreatedBy());
         vo.setCreatedAt(attachment.getCreateAt() != null
                 ? attachment.getCreateAt().format(TIME_FORMATTER) : null);
-        User creator = userMapper.selectById(attachment.getCreatedBy());
-        if (creator != null) {
-            vo.setCreatedByName(creator.getNickname());
-        }
+        vo.setCreatedByName(createdByName);
         return vo;
+    }
+
+    /** 批量查询用户昵称（null 昵称也保留键，与单条查询语义一致） */
+    private Map<Long, String> loadNicknames(List<Long> userIds) {
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, String> nicknames = new HashMap<>();
+        for (User user : userMapper.selectBatchIds(userIds)) {
+            nicknames.put(user.getId(), user.getNickname());
+        }
+        return nicknames;
     }
 }

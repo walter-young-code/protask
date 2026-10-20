@@ -341,7 +341,14 @@ onMounted(async () => {
   // 先加载项目（拿到 myRole 权限上下文），再并行加载任务与视图，
   // 避免默认视图自动创建时 editable() 尚未就绪的竞态
   await loadProject()
-  await Promise.all([loadTasks(), loadViews(), loadMembers()])
+  // 分享访客无权读取成员列表（后端 403），失败不阻断任务加载与 ?task= 深链
+  await Promise.all([
+    loadTasks(),
+    loadViews(),
+    loadMembers().catch(() => {
+      members.value = []
+    }),
+  ])
   await handleTaskQuery()
 })
 
@@ -351,10 +358,15 @@ watch(
   (id) => {
     if (route.name === 'project-detail' && id) {
       keyword.value = ''
+      // 先清空旧项目数据，避免新项目页头与旧任务/成员短暂串位
+      tasks.value = []
+      members.value = []
       loadProject().then(() => {
         loadTasks()
         loadViews()
-        loadMembers()
+        loadMembers().catch(() => {
+          members.value = []
+        })
       })
     }
   },

@@ -2,6 +2,8 @@ package com.protask.config;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.protask.common.BusinessException;
+import com.protask.common.PasswordStrengthValidator;
 import com.protask.entity.Block;
 import com.protask.entity.Project;
 import com.protask.entity.User;
@@ -10,10 +12,12 @@ import com.protask.mapper.ProjectMapper;
 import com.protask.mapper.UserMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -22,7 +26,8 @@ import java.util.Map;
 
 /**
  * 初始化数据：
- * 1) 首次启动时若用户表为空，则创建默认管理员账号（仅用于开发环境，生产请及时修改）。
+ * 1) 首次启动时若用户表为空，则创建管理员账号：
+ *    密码取 PROTASK_ADMIN_PASSWORD；未配置时随机生成并在日志中打印一次。
  * 2) 首次启动时若模板库为空，则导入内置项目模板（参考 Focalboard 模板集，
  *    模板以 is_template=1 的项目承载卡片属性定义与示例任务/视图）。
  */
@@ -36,7 +41,18 @@ public class DataInitializer implements CommandLineRunner {
     private final BlockMapper blockMapper;
     private final PasswordEncoder passwordEncoder;
 
+    /** 初始管理员密码（可选）：未配置时随机生成并仅在首次启动日志打印一次 */
+    @Value("${protask.admin.initial-password:}")
+    private String initialAdminPassword;
+
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+    /** 随机密码字符集：剔除易混淆字符（0/O、1/I/l 等） */
+    private static final String PASSWORD_UPPER = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+    private static final String PASSWORD_LOWER = "abcdefghijkmnpqrstuvwxyz";
+    private static final String PASSWORD_DIGITS = "23456789";
+    private static final String PASSWORD_SYMBOLS = "!@#$%^&*";
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     /** 内置模板的视图块标题与卡片图标 */
     private static final String BOARD_VIEW_TITLE = "看板";
@@ -64,13 +80,57 @@ public class DataInitializer implements CommandLineRunner {
         }
         User admin = new User();
         admin.setUsername("admin");
-        admin.setPassword(passwordEncoder.encode("Test@12345"));
+        String password = resolveInitialPassword();
+        admin.setPassword(passwordEncoder.encode(password));
         admin.setNickname("管理员");
         admin.setRole("admin");
         admin.setStatus(1);
         userMapper.insert(admin);
-        log.info("已初始化默认管理员账号 admin / Test@12345");
+        if (initialAdminPassword != null && !initialAdminPassword.isBlank()) {
+            log.info("已创建默认管理员账号 admin（密码来自 PROTASK_ADMIN_PASSWORD 配置）");
+        } else {
+            log.warn("已创建默认管理员账号 admin，随机初始密码（仅本次启动打印，请登录后立即修改）: {}", password);
+        }
         return admin.getId();
+    }
+
+    /** 解析初始密码：优先环境变量配置（需满足强度要求），否则随机生成 16 位强密码 */
+    private String resolveInitialPassword() {
+        if (initialAdminPassword == null || initialAdminPassword.isBlank()) {
+            return generateRandomPassword();
+        }
+        try {
+            PasswordStrengthValidator.validate(initialAdminPassword);
+        } catch (BusinessException e) {
+            throw new IllegalStateException(
+                    "PROTASK_ADMIN_PASSWORD 不符合密码强度要求（至少 8 位且包含大小写字母/数字/特殊字符中的 3 类）", e);
+        }
+        return initialAdminPassword;
+    }
+
+    /** 生成包含四类字符的 16 位随机密码，并打乱顺序 */
+    private static String generateRandomPassword() {
+        StringBuilder sb = new StringBuilder(16);
+        sb.append(randomCharOf(PASSWORD_UPPER))
+                .append(randomCharOf(PASSWORD_LOWER))
+                .append(randomCharOf(PASSWORD_DIGITS))
+                .append(randomCharOf(PASSWORD_SYMBOLS));
+        String all = PASSWORD_UPPER + PASSWORD_LOWER + PASSWORD_DIGITS + PASSWORD_SYMBOLS;
+        while (sb.length() < 16) {
+            sb.append(randomCharOf(all));
+        }
+        char[] chars = sb.toString().toCharArray();
+        for (int i = chars.length - 1; i > 0; i--) {
+            int j = SECURE_RANDOM.nextInt(i + 1);
+            char tmp = chars[i];
+            chars[i] = chars[j];
+            chars[j] = tmp;
+        }
+        return new String(chars);
+    }
+
+    private static char randomCharOf(String source) {
+        return source.charAt(SECURE_RANDOM.nextInt(source.length()));
     }
 
     /** 模板库为空时导入内置模板（项目 + 视图块 + 示例任务块） */

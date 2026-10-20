@@ -85,23 +85,29 @@ ProTask/
 
 ## 快速开始
 
+> 先复制根目录 `.env.example` 为 `.env`，并填写数据库密码与 JWT 密钥：
+> `PROTASK_DB_ROOT_PASSWORD` 和 `PROTASK_JWT_SECRET`（可用 `openssl rand -base64 48` 生成）。
+> 两者均为必填，未配置时 `docker compose` 会直接报错。
+
 ### 1. 启动 MySQL
 
 ```powershell
 docker compose up -d mysql
 ```
 
-连接信息：`127.0.0.1:3306`，root/`protask-strong-pw-change-me`（由 `PROTASK_DB_ROOT_PASSWORD` 覆盖），数据库 `protask`（自动创建）。
+连接信息：`127.0.0.1:3306`，root/`<PROTASK_DB_ROOT_PASSWORD>`（来自 `.env`），数据库 `protask`（自动创建）。
 
 ### 2. 启动后端（端口 8000）
 
 ```powershell
-# 本地直跑时需将数据库密码注入环境变量（与上方容器密码一致）
-$env:PROTASK_DB_PASSWORD="protask-strong-pw-change-me"
+# 本地直跑时需将数据库密码注入环境变量（与 .env 中的容器密码一致）
+$env:PROTASK_DB_PASSWORD="<PROTASK_DB_ROOT_PASSWORD>"
+$env:PROTASK_JWT_SECRET="<随机长字符串>"
 mvn -f server/pom.xml spring-boot:run
 ```
 
-首次启动 Flyway 自动建表，并初始化默认管理员账号：**admin / Test@12345**（仅开发用途，请及时修改）。
+首次启动 Flyway 自动建表，并初始化管理员账号：`admin`。初始密码优先取 `PROTASK_ADMIN_PASSWORD`；
+未配置时随机生成，并在首次启动日志中以 WARN 输出（仅打印一次，请登录后立即修改）。
 
 ### 3. 启动前端（端口 3000）
 

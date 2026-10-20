@@ -39,6 +39,10 @@ function handleUnauthorized() {
 /** 响应拦截器：解包 Result 结构，统一错误提示 */
 instance.interceptors.response.use(
   (response) => {
+    // 二进制响应（附件下载/预览）不参与 Result 解包
+    if (response.config.responseType === 'blob') {
+      return response
+    }
     const result = response.data as ApiResult<unknown>
     if (result.code === 200) {
       return response
@@ -88,4 +92,31 @@ export async function patch<T>(url: string, data?: unknown): Promise<T> {
 export async function del<T>(url: string, data?: unknown): Promise<T> {
   const response = await instance.delete<ApiResult<T>>(url, { data })
   return response.data.data
+}
+
+/** 下载二进制文件（鉴权走请求头，避免 token 出现在 URL） */
+export async function getBlob(url: string): Promise<Blob> {
+  // 后端返回的附件 URL 是含 /api 前缀的完整路径，而实例 baseURL 已带 /api，需剥离避免重复
+  const path = url.startsWith('/api/') ? url.slice(4) : url
+  const response = await instance.get<Blob>(path, { responseType: 'blob' })
+  const contentType = String(response.headers['content-type'] || '')
+  if (contentType.includes('application/json')) {
+    // 后端业务错误以 JSON 返回：Blob 响应不会走正常错误分支，需还原错误并提示
+    const text = await (response.data as Blob).text()
+    let result: ApiResult<unknown> | null = null
+    try {
+      result = JSON.parse(text) as ApiResult<unknown>
+    } catch {
+      // 非 JSON 错误体则按正常文件返回
+    }
+    if (result && result.code !== 200) {
+      if (result.code === 401) {
+        handleUnauthorized()
+      }
+      const message = result.message || i18n.global.t('request.failed')
+      appMessage.error(message)
+      throw new Error(message)
+    }
+  }
+  return response.data
 }

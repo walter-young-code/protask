@@ -33,6 +33,9 @@ spring:
 protask:
   # 统一时区：JVM 默认时区来源，所有时间戳按此时区产生与存储（跨时区一致性要求固定为 UTC）
   timezone: UTC
+  # 首次启动初始化管理员账号的密码；留空则随机生成并仅在首次启动日志中打印一次
+  admin:
+    initial-password: ${PROTASK_ADMIN_PASSWORD:}
   # 图片上传目录（相对服务运行目录），静态映射到 /api/v1/upload/files/**，公开访问
   upload-dir: uploads
   # 非图片附件私有存储目录（不做静态映射，仅通过鉴权下载接口访问）
@@ -42,6 +45,8 @@ protask:
     rate-limit:
       login: 10
       register: 5
+      # 是否信任反向代理追加的 X-Forwarded-For：nginx 部署时开启，直连部署保持 false 防伪造绕过
+      trust-proxy: ${PROTASK_RATE_LIMIT_TRUST_PROXY:false}
 
 mybatis-plus:
   configuration:
@@ -63,8 +68,8 @@ sa-token:
   is-share: true
   # 只从请求头读取 token，不从 cookie 读取
   is-read-header: true
-  # 允许从请求参数读取 token（附件鉴权下载等无法携带请求头的场景使用）
-  is-read-body: true
+  # 不再从请求参数读取 token（附件下载改为请求头鉴权，避免 token 进入 URL 与日志）
+  is-read-body: false
   is-read-cookie: false
   # 请求头 token 前缀，前端传 "Bearer xxx"
   token-prefix: Bearer
