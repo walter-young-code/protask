@@ -1,7 +1,7 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import * as projectApi from '@/api/project'
-import type { ProjectRequest, ProjectVO } from '@/types'
+import type { ProjectRequest, ProjectTemplateRequest, ProjectVO } from '@/types'
 
 /** 项目全局状态：项目列表、当前项目上下文 */
 export const useProjectStore = defineStore('project', () => {
@@ -16,6 +16,13 @@ export const useProjectStore = defineStore('project', () => {
   /** 创建项目并刷新列表 */
   async function createProject(data: ProjectRequest): Promise<ProjectVO> {
     const project = await projectApi.createProject(data)
+    await fetchProjects()
+    return project
+  }
+
+  /** 从模板创建项目并刷新列表 */
+  async function createProjectFromTemplate(data: ProjectTemplateRequest): Promise<ProjectVO> {
+    const project = await projectApi.createProjectFromTemplate(data)
     await fetchProjects()
     return project
   }
@@ -58,6 +65,7 @@ export const useProjectStore = defineStore('project', () => {
     currentProject,
     fetchProjects,
     createProject,
+    createProjectFromTemplate,
     updateProject,
     setCurrentProject,
     removeProject,

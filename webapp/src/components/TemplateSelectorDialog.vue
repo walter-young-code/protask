@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { createProjectFromTemplate, listTemplates } from '@/api/project'
+import { listTemplates } from '@/api/project'
+import { useProjectStore } from '@/stores/project'
 import type { CardProperty, ProjectTemplateSampleCard, ProjectTemplateVO } from '@/types'
 
 const { t } = useI18n()
@@ -17,6 +18,7 @@ const emit = defineEmits<{
   (e: 'blank'): void
 }>()
 
+const projectStore = useProjectStore()
 const loading = ref(false)
 const creating = ref(false)
 const templates = ref<ProjectTemplateVO[]>([])
@@ -88,7 +90,8 @@ async function handleUseTemplate() {
   if (!name) return
   creating.value = true
   try {
-    const project = await createProjectFromTemplate({
+    // 走 store 创建，成功后自动刷新侧边栏项目列表
+    const project = await projectStore.createProjectFromTemplate({
       templateId: selected.value.id,
       name,
     })

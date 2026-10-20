@@ -7,12 +7,12 @@ services:
       MYSQL_ROOT_PASSWORD: ${PROTASK_DB_ROOT_PASSWORD:-protask-strong-pw-change-me}
       MYSQL_DATABASE: protask
       TZ: UTC
-    # 安全修复：不再将 3306 暴露到宿主机，仅通过 Docker 内部网络访问
+    # 仅通过 Docker 内部网络访问，同时为宿主机本地调试
+    # （mvn spring-boot:run）绑定 127.0.0.1:3306，不暴露到公网
+    ports:
+      - "127.0.0.1:3306:3306"
     expose:
       - "3306"
-    # ports 已移除，如需宿主机本地调试可临时改回:
-    # ports:
-    #   - "127.0.0.1:3306:3306"   ← 仅绑定 localhost，不暴露到公网
     volumes:
       - protask-mysql-data:/var/lib/mysql
     command:

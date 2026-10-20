@@ -88,6 +88,7 @@ export default {
     settings: 'Settings',
     projectSearchPlaceholder: 'Search projects',
     noMatchedProject: 'No matching projects',
+    categoryEmpty: 'No projects',
   },
   notification: {
     title: 'Notifications',

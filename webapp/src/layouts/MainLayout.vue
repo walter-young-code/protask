@@ -82,7 +82,15 @@ const editingCategoryName = ref('')
 const categorySaving = ref(false)
 const categoryEditInput = ref<InputInstance>()
 
-/** 侧边栏项目分组：未分类 + 按分类分组（含搜索过滤） */
+/** 侧边栏分类分组：分类名 + 是否当前用户创建（决定是否展示重命名/删除菜单） */
+interface SidebarCategoryGroup {
+  id: number
+  name: string
+  owned: boolean
+  projects: ProjectVO[]
+}
+
+/** 侧边栏项目分组：未分类 + 分类分组（空分类也展示，含搜索过滤） */
 const groupedProjects = computed(() => {
   const kw = projectKeyword.value.trim().toLowerCase()
   const list = kw
@@ -99,7 +107,19 @@ const groupedProjects = computed(() => {
       uncategorized.push(p)
     }
   }
-  return { uncategorized, byCategory }
+  // 当前用户的分类始终展示（含无项目的空分类）；搜索时仅保留有匹配项目的分组
+  const categories: SidebarCategoryGroup[] = []
+  for (const category of categoryStore.categories) {
+    const projects = byCategory.get(category.id) ?? []
+    if (kw && !projects.length) continue
+    categories.push({ id: category.id, name: category.name, owned: true, projects })
+    byCategory.delete(category.id)
+  }
+  // 兜底：分类不在当前用户分类列表（如他人分类）时仍按原分组展示，避免项目从侧边栏消失
+  for (const [id, projects] of byCategory) {
+    categories.push({ id, name: '', owned: false, projects })
+  }
+  return { uncategorized, categories }
 })
 
 /** 分类名（优先分类列表，缺失时用项目自带名称兜底） */
@@ -243,7 +263,7 @@ async function handleCopyInvite() {
   }
 }
 
-/** 侧边栏新建项目：创建后直接进入项目 */
+/** 侧边栏新建项目：模板/空白项目创建时 store 已刷新列表，直接进入项目 */
 function handleProjectCreated(id: number) {
   projectDialogVisible.value = false
   router.push({ name: 'project-detail', params: { id } })
@@ -643,15 +663,15 @@ function handleProjectEdited() {
               </el-dropdown>
             </el-menu-item>
 
-            <!-- 按分类分组的项目（可折叠/展开） -->
+            <!-- 按分类分组的项目（可折叠/展开，空分类同样展示） -->
             <el-sub-menu
-              v-for="[categoryId, projects] in groupedProjects.byCategory"
-              :key="categoryId"
-              :index="`category-${categoryId}`"
+              v-for="group in groupedProjects.categories"
+              :key="group.id"
+              :index="`category-${group.id}`"
             >
               <template #title>
                 <el-input
-                  v-if="editingCategoryId === categoryId"
+                  v-if="editingCategoryId === group.id"
                   ref="categoryEditInput"
                   v-model="editingCategoryName"
                   size="small"
@@ -665,16 +685,16 @@ function handleProjectEdited() {
                 <template v-else>
                   <span
                     class="category-name"
-                    :title="t('layout.renameCategoryTip')"
-                    @dblclick.stop="startEditCategory(categoryId)"
+                    :title="group.owned ? t('layout.renameCategoryTip') : undefined"
+                    @dblclick.stop="group.owned && startEditCategory(group.id)"
                   >
-                    {{ categoryNameOf(categoryId) }}
+                    {{ group.name }}
                   </span>
                   <el-dropdown
-                    v-if="categoryStore.categories.find((c) => c.id === categoryId)?.createdBy === userStore.user?.id"
+                    v-if="group.owned"
                     trigger="click"
                     class="project-more-wrap"
-                    @command="(cmd: string) => handleCategoryMenuCommand(cmd, categoryId)"
+                    @command="(cmd: string) => handleCategoryMenuCommand(cmd, group.id)"
                   >
                     <span class="project-more" :title="t('common.more')" @click.stop>
                       <el-icon><MoreFilled /></el-icon>
@@ -693,7 +713,7 @@ function handleProjectEdited() {
                 </template>
               </template>
               <el-menu-item
-                v-for="project in projects"
+                v-for="project in group.projects"
                 :key="project.id"
                 :index="`project-${project.id}`"
               >
@@ -729,10 +749,14 @@ function handleProjectEdited() {
                   </template>
                 </el-dropdown>
               </el-menu-item>
+              <!-- 空分类占位提示：新建后立即可见，避免展开后一片空白 -->
+              <li v-if="!group.projects.length" class="category-empty">
+                {{ t('layout.categoryEmpty') }}
+              </li>
             </el-sub-menu>
           </el-menu>
           <el-empty
-            v-if="groupedProjects.uncategorized.length === 0 && groupedProjects.byCategory.size === 0 && hasSearchKeyword"
+            v-if="groupedProjects.uncategorized.length === 0 && groupedProjects.categories.length === 0 && hasSearchKeyword"
             :description="t('layout.noMatchedProject')"
             :image-size="40"
           />
@@ -1001,7 +1025,7 @@ function handleProjectEdited() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 12px 8px 20px;
+  padding: 12px 10px 6px 18px;
 }
 
 .aside-title {
@@ -1015,13 +1039,13 @@ function handleProjectEdited() {
 
 .aside-search {
   /* el-input 默认宽度 100%，用内边距留白避免 margin 撑破侧边栏被右边缘遮盖 */
-  margin-bottom: 8px;
-  padding: 0 12px;
+  margin-bottom: 6px;
+  padding: 0 10px;
 }
 
 .project-icon {
   margin-right: 6px;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .category-name {
@@ -1030,6 +1054,9 @@ function handleProjectEdited() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 分组标题：比项目文字小一号的粗体，左对齐到项目图标列 */
+  font-size: 12px;
+  font-weight: 600;
   cursor: default;
 }
 
@@ -1043,6 +1070,39 @@ function handleProjectEdited() {
   min-height: 0;
   overflow-y: auto;
   border-right: none;
+  /* 紧凑列表：小号字体与行高，减小项间距 */
+  --el-menu-item-height: 34px;
+  --el-menu-sub-item-height: 32px;
+  --el-menu-item-font-size: 13px;
+  --el-menu-base-level-padding: 12px;
+  --el-menu-level-padding: 14px;
+  /* 未选中项弱化为次要文字色，悬停时提亮 */
+  --el-menu-text-color: var(--app-text-secondary);
+  --el-menu-hover-text-color: var(--app-text-primary);
+  --el-menu-hover-bg-color: var(--app-fill);
+  padding: 2px 0;
+}
+
+.aside-menu :deep(.el-menu-item),
+.aside-menu :deep(.el-sub-menu__title) {
+  margin: 1px 6px;
+  border-radius: 6px;
+}
+
+/* 空分类占位提示：缩进与分类下项目名一致 */
+.category-empty {
+  list-style: none;
+  padding: 4px 12px 6px 50px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--app-text-secondary);
+}
+
+/* 选中项：浅色底 + 主色文字，与弱化的未选中项形成对比 */
+.aside-menu :deep(.el-menu-item.is-active) {
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+  font-weight: 500;
 }
 
 .project-name {
@@ -1092,7 +1152,7 @@ function handleProjectEdited() {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding: 12px 16px;
+  padding: 8px 12px;
   border-top: 1px solid var(--app-border-light);
 }
 

@@ -87,6 +87,7 @@ export default {
     settings: '设置',
     projectSearchPlaceholder: '搜索项目',
     noMatchedProject: '无匹配项目',
+    categoryEmpty: '暂无项目',
   },
   notification: {
     title: '通知',

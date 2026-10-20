@@ -91,11 +91,13 @@ ProTask/
 docker compose up -d mysql
 ```
 
-连接信息：`localhost:3306`，root/root，数据库 `protask`（自动创建）。
+连接信息：`127.0.0.1:3306`，root/`protask-strong-pw-change-me`（由 `PROTASK_DB_ROOT_PASSWORD` 覆盖），数据库 `protask`（自动创建）。
 
 ### 2. 启动后端（端口 8000）
 
 ```powershell
+# 本地直跑时需将数据库密码注入环境变量（与上方容器密码一致）
+$env:PROTASK_DB_PASSWORD="protask-strong-pw-change-me"
 mvn -f server/pom.xml spring-boot:run
 ```
 
