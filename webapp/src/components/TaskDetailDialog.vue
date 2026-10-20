@@ -10,6 +10,7 @@ import * as taskApi from '@/api/task'
 import * as blockApi from '@/api/block'
 import * as attachmentApi from '@/api/attachment'
 import type { AttachmentVO } from '@/api/attachment'
+import { useSiteStore } from '@/stores/site'
 import PropertyValueInput from '@/components/PropertyValueInput.vue'
 import IconPicker from '@/components/IconPicker.vue'
 import type { BlockVO, CardProperty, ProjectMemberVO, TaskVO } from '@/types'
@@ -39,6 +40,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const siteStore = useSiteStore()
 
 const saving = ref(false)
 const submittingComment = ref(false)
@@ -66,11 +68,26 @@ let imageInsertRange: { start: number; end: number } | null = null
 /** 图片选择器是否打开（工具条 🖼 按钮触发） */
 const imagePickerVisible = ref(false)
 
-/** 任务附件列表 */
+/** 任务附件列表（分页加载，按上传时间倒序） */
 const attachments = ref<AttachmentVO[]>([])
+
+/** 服务端返回的附件总数（与已加载条数区分） */
+const attachmentTotal = ref(0)
+
+/** 已加载到的附件页码 */
+const attachmentPage = ref(1)
+
+/** 附件列表加载中标记 */
+const loadingAttachments = ref(false)
+
+/** 是否还有未加载的附件 */
+const hasMoreAttachments = computed(() => attachments.value.length < attachmentTotal.value)
 
 /** 附件上传中标记（按钮 loading） */
 const uploadingAttachment = ref(false)
+
+/** 单文件上传上限（字节，随后端 multipart 配置刷新） */
+const maxAttachmentBytes = computed(() => siteStore.maxUploadBytes)
 
 /** 隐藏的附件文件选择框（附件区上传按钮触发，accept 放开多类型） */
 const attachmentInputRef = ref<HTMLInputElement>()
@@ -115,10 +132,24 @@ async function downloadAttachment(att: AttachmentVO) {
   }
 }
 
-/** 加载任务附件列表 */
-async function loadAttachments() {
+/** 加载任务附件：reset=true 从第一页重载，否则加载下一页追加 */
+async function loadAttachments(reset = true) {
   if (!props.task) return
-  attachments.value = await attachmentApi.listAttachments(props.task.id)
+  const page = reset ? 1 : attachmentPage.value + 1
+  loadingAttachments.value = true
+  try {
+    const result = await attachmentApi.listAttachments(props.task.id, {
+      page,
+      size: attachmentApi.ATTACHMENT_PAGE_SIZE,
+    })
+    attachmentTotal.value = result.total
+    attachmentPage.value = page
+    attachments.value = reset ? result.records : [...attachments.value, ...result.records]
+  } catch {
+    // 错误提示由请求拦截器统一处理
+  } finally {
+    loadingAttachments.value = false
+  }
 }
 
 /** 打开图片选择器：记录打开时刻的选区（插入位置以打开时为准） */
@@ -136,23 +167,47 @@ async function insertAttachmentImage(att: AttachmentVO) {
   await insertImageSyntax(att.url)
 }
 
-/** 选择附件文件：图片先校验分辨率，其余类型直接上传（支持连续选择同一文件） */
+/**
+ * 选择附件文件：大小/分辨率预校验后多选串行上传（支持连续选择同一文件）。
+ * 单个文件失败不阻断剩余文件，失败提示由请求拦截器统一处理。
+ */
 async function handleAttachmentSelected(event: Event) {
   const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
+  const files = Array.from(input.files ?? [])
   input.value = '' // 清空以便再次选择同一文件
-  if (!file || !props.task) return
-  if (file.type.startsWith('image/')) {
-    const sizeOk = await checkImageSize(file)
-    if (!sizeOk) return
+  if (!files.length || !props.task) return
+  const accepted: File[] = []
+  for (const file of files) {
+    if (file.size > maxAttachmentBytes.value) {
+      appMessage.warning(
+        t('attachment.tooLarge', { size: formatFileSize(maxAttachmentBytes.value) }),
+      )
+      continue
+    }
+    if (file.type.startsWith('image/')) {
+      const sizeOk = await checkImageSize(file)
+      if (!sizeOk) continue
+    }
+    accepted.push(file)
   }
+  if (!accepted.length) return
   uploadingAttachment.value = true
+  let success = 0
   try {
-    await attachmentApi.uploadAttachment(props.task.id, file)
-    appMessage.success(t('attachment.uploadSuccess'))
+    for (const file of accepted) {
+      try {
+        await attachmentApi.uploadAttachment(props.task.id, file)
+        success++
+      } catch {
+        // 单个文件失败已由请求拦截器提示，继续上传剩余文件
+      }
+    }
+    if (success === 1) {
+      appMessage.success(t('attachment.uploadSuccess'))
+    } else if (success > 1) {
+      appMessage.success(t('attachment.uploadSuccessCount', { count: success }))
+    }
     await loadAttachments()
-  } catch {
-    // 错误提示已由请求拦截器统一处理
   } finally {
     uploadingAttachment.value = false
   }
@@ -794,7 +849,7 @@ function formatTime(value?: string) {
       <div class="attachment-section">
         <div class="attachment-header">
           <span class="attachment-title">{{ t('attachment.title') }}</span>
-          <span v-if="attachments.length" class="attachment-count">{{ attachments.length }}</span>
+          <span v-if="attachmentTotal" class="attachment-count">{{ attachmentTotal }}</span>
           <el-button
             v-if="editable"
             size="small"
@@ -807,11 +862,12 @@ function formatTime(value?: string) {
             <el-icon class="attachment-upload-icon"><Upload /></el-icon>
             {{ t('attachment.upload') }}
           </el-button>
-          <!-- 隐藏的文件选择框：附件区上传按钮触发，accept 放开多类型 -->
+          <!-- 隐藏的文件选择框：附件区上传按钮触发，支持多选（串行上传） -->
           <input
             ref="attachmentInputRef"
             type="file"
             class="attachment-file-input"
+            multiple
             @change="handleAttachmentSelected"
           />
         </div>
@@ -874,6 +930,12 @@ function formatTime(value?: string) {
               />
             </div>
           </div>
+        </div>
+        <!-- 分页加载：已加载条数少于服务端总数时显示 -->
+        <div v-if="hasMoreAttachments" class="attachment-more">
+          <el-button link type="primary" size="small" :loading="loadingAttachments" @click="loadAttachments(false)">
+            {{ t('attachment.loadMore') }}
+          </el-button>
         </div>
       </div>
 
@@ -1133,6 +1195,13 @@ function formatTime(value?: string) {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* 分页“加载更多”：居中轻量按钮 */
+.attachment-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 6px;
 }
 
 .attachment-item {

@@ -21,7 +21,7 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 public class GlobalExceptionHandler {
 
     /** 单文件上传上限（与 application.yml 的 multipart 配置一致，提示文案动态引用） */
-    @Value("${spring.servlet.multipart.max-file-size:5MB}")
+    @Value("${spring.servlet.multipart.max-file-size:20MB}")
     private String maxFileSize;
 
     /** 业务异常：按请求语言解析国际化消息 */

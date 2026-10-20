@@ -14,7 +14,7 @@
 - **日历订阅**：生成 ICS 订阅地址，在 Outlook / Apple Calendar 等外部日历中同步任务
 - **团队管理**：创建团队、分配成员，项目关联团队
 - **邀请注册**：生成一次性邀请链接，关闭公开注册入口
-- **管理后台**：用户管理、团队管理、模板管理、归档项目管理、站点设置（Logo / 站点名称）
+- **管理后台**：用户管理、团队管理、模板管理、归档项目管理、存储管理、站点设置（Logo / 站点名称）
 - **暗色模式**：语义 CSS 变量 + Element Plus 暗色变量，顶栏一键切换
 - **多语言**：前后端均支持中英文切换（vue-i18n + 后端 i18n properties）
 - **MCP 服务**：将项目 / 任务管理能力暴露给 AI Agent，带写入规范守卫防数据污染
@@ -44,6 +44,7 @@ ProTask/
 │       │   ├── service/    # 业务逻辑层
 │       │   ├── mapper/     # 数据访问层（MyBatis-Plus）
 │       │   ├── entity/     # 数据库实体
+│       │   ├── storage/    # 文件存储抽象（FileStorage / 本地磁盘实现）
 │       │   └── dto/        # 请求/响应对象
 │       └── resources/
 │           ├── application.yml
@@ -141,6 +142,31 @@ docker compose up -d
 | `cd mcp && npm run build` | 构建 MCP 服务 |
 | `cd mcp && npm run bundle` | esbuild 打包为单文件（mcp/dist-bundle/protask-mcp.mjs） |
 
+## 存储与上传配置
+
+附件按任务分目录存放，文件名为 UUID：
+
+| 目录 | 配置项 | 内容 | 访问方式 |
+| --- | --- | --- | --- |
+| `uploads/{projectId}/{taskId}/` | `protask.upload-dir`（默认 `uploads`） | Markdown 插图、图片附件 | 公开静态 `/api/v1/upload/files/**` |
+| `uploads-attachments/{projectId}/{taskId}/` | `protask.attachment-dir`（默认 `uploads-attachments`） | 文档/压缩包等附件 | 鉴权下载接口 |
+
+相关配置项（`server/src/main/resources/application.yml`）：
+
+| 配置 / 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PROTASK_MAX_FILE_SIZE` | `20MB` | 单文件上传上限，经 `/api/v1/site/settings` 下发给前端预校验 |
+| `PROTASK_MAX_REQUEST_SIZE` | `50MB` | 单次请求总大小上限（为批量上传预留） |
+| `protask.attachment.max-per-task` | `20` | 单任务附件数量上限（`<=0` 不限制） |
+| `protask.attachment.max-per-project` | `0` | 单项目附件数量上限（`<=0` 不限制） |
+| `protask.attachment.max-per-user-per-day` | `0` | 单用户每日上传附件数上限（`<=0` 不限制） |
+| `protask.storage.warn-file-count` | `50000` | 两目录合计文件数告警阈值 |
+| `protask.storage.warn-total-bytes` | `5368709120` | 两目录合计占用告警阈值（5GB） |
+| `protask.storage.orphan-retention-days` | `7` | 孤儿图片保留天数（管理后台手动清理） |
+| `PROTASK_STORAGE_CHECK_CRON` | `0 0 3 * * *` | 存储巡检 cron，超阈值输出 WARN 日志 |
+
+存储抽象为 `FileStorage` 接口（`server/src/main/java/com/protask/storage/`），当前为本地磁盘实现；接入 MinIO/S3/OSS 时替换 `FileStorageConfig` 中的实现即可。管理后台「存储管理」页可查看两个目录的用量并清理无引用的 Markdown 插图。
+
 ## API 概览
 
 统一响应结构：`{ "code": 200, "message": "...", "data": ... }`；认证方式为请求头 `Authorization: Bearer <JWT>`。
@@ -208,9 +234,9 @@ docker compose up -d
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET/POST | /api/v1/tasks/{taskId}/attachments | 附件列表 / 上传附件 |
-| GET | /api/v1/attachments/{id}/download | 下载附件 |
-| DELETE | /api/v1/attachments/{id} | 删除附件 |
+| GET/POST | /api/v1/tasks/{taskId}/attachments | 附件分页列表（`page`/`size`） / 上传附件 |
+| GET | /api/v1/tasks/{taskId}/attachments/{id}/download | 鉴权下载附件 |
+| DELETE | /api/v1/tasks/{taskId}/attachments/{id} | 删除附件 |
 | POST | /api/v1/upload/image | 上传图片（描述区嵌入） |
 | GET | /api/v1/notifications | 通知列表 |
 | GET | /api/v1/notifications/unread-count | 未读通知数 |
@@ -233,8 +259,10 @@ docker compose up -d
 | GET | /api/v1/admin/projects/archived | 归档项目列表 |
 | POST | /api/v1/admin/projects/{id}/restore | 恢复归档项目 |
 | DELETE | /api/v1/admin/projects/{id} | 删除归档项目 |
+| GET | /api/v1/admin/storage | 存储用量与孤儿图片统计 |
+| DELETE | /api/v1/admin/storage/orphans | 清理孤儿图片 |
 | DELETE | /api/v1/admin/projects/deleted | 物理清理已删项目 |
-| GET/PUT | /api/v1/settings | 站点公开设置 / 更新站点设置 |
+| GET/PUT | /api/v1/site/settings | 站点公开设置 / 更新站点设置 |
 
 ### 任务状态流转规则
 

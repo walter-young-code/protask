@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowLeft, Box, Files, Moon, OfficeBuilding, Setting, Sunny, User } from '@element-plus/icons-vue'
+import { ArrowLeft, Box, Coin, Files, Moon, OfficeBuilding, Setting, Sunny, User } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { appMessage } from '@/utils/appMessage'
@@ -96,6 +96,10 @@ function handleUserMenuCommand(command: string) {
           <el-menu-item index="admin-archived-projects">
             <el-icon><Box /></el-icon>
             <span>{{ t('adminArchivedProjects.title') }}</span>
+          </el-menu-item>
+          <el-menu-item index="admin-storage">
+            <el-icon><Coin /></el-icon>
+            <span>{{ t('adminStorage.title') }}</span>
           </el-menu-item>
           <el-menu-item index="admin-settings">
             <el-icon><Setting /></el-icon>

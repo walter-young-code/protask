@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
 import type { UploadRequestOptions } from 'element-plus'
 import { useI18n } from 'vue-i18n'
@@ -10,7 +10,9 @@ import { useSiteStore } from '@/stores/site'
 const { t } = useI18n()
 const siteStore = useSiteStore()
 
-const MAX_LOGO_SIZE = 5 * 1024 * 1024
+/** LOGO 上限跟随全局上传配置（默认 20MB），文案按实际值展示 */
+const maxLogoSize = computed(() => siteStore.maxUploadBytes)
+const maxLogoSizeText = computed(() => `${Math.round(maxLogoSize.value / 1024 / 1024)}MB`)
 
 const form = reactive({ name: '', logo: '' })
 const uploading = ref(false)
@@ -22,14 +24,14 @@ onMounted(async () => {
   form.logo = siteStore.logo
 })
 
-/** 上传前校验：仅图片文件且不超过 5MB */
+/** 上传前校验：仅图片文件且不超过全局上传上限 */
 function beforeUpload(file: File) {
   if (!file.type.startsWith('image/')) {
     appMessage.warning(t('siteSettings.uploadTypeInvalid'))
     return false
   }
-  if (file.size > MAX_LOGO_SIZE) {
-    appMessage.warning(t('siteSettings.uploadTooLarge'))
+  if (file.size > maxLogoSize.value) {
+    appMessage.warning(t('siteSettings.uploadTooLarge', { size: maxLogoSizeText.value }))
     return false
   }
   return true
@@ -112,7 +114,7 @@ async function handleSave() {
             </div>
           </div>
           <div class="field-tip">
-            {{ t('siteSettings.logoTip') }}
+            {{ t('siteSettings.logoTip', { size: maxLogoSizeText }) }}
             <template v-if="form.logo"> · {{ t('siteSettings.logoRemoveTip') }}</template>
           </div>
         </el-form-item>

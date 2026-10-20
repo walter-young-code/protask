@@ -8,12 +8,18 @@ export const useSiteStore = defineStore('site', () => {
   const name = ref('')
   const logo = ref('')
 
+  /** 单文件上传上限（字节），默认 20MB，随后端配置刷新 */
+  const maxUploadBytes = ref(20 * 1024 * 1024)
+
   /** 拉取站点公开设置（应用启动时调用，失败静默保持默认品牌） */
   async function fetchSettings() {
     try {
       const result = await siteApi.getSiteSettings()
       name.value = result.name
       logo.value = result.logo || ''
+      if (result.maxUploadBytes > 0) {
+        maxUploadBytes.value = result.maxUploadBytes
+      }
     } catch {
       // 后端不可达时保持默认品牌
     }
@@ -26,5 +32,5 @@ export const useSiteStore = defineStore('site', () => {
     logo.value = result.logo || ''
   }
 
-  return { name, logo, fetchSettings, updateSettings }
+  return { name, logo, maxUploadBytes, fetchSettings, updateSettings }
 })

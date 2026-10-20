@@ -8,8 +8,10 @@ import com.protask.entity.SiteSetting;
 import com.protask.mapper.SiteSettingMapper;
 import com.protask.permission.PermissionService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import org.springframework.util.unit.DataSize;
 
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -35,6 +37,10 @@ public class SiteSettingService {
     private final SiteSettingMapper siteSettingMapper;
     private final PermissionService permissionService;
 
+    /** 单文件上传上限（与 multipart 配置一致，随设置下发给前端做预校验） */
+    @Value("${spring.servlet.multipart.max-file-size:20MB}")
+    private String maxFileSize;
+
     /** 读取公开设置：缺失的键回退默认值，LOGO 未配置返回 null */
     public SiteSettingsVO getPublicSettings() {
         Map<String, String> values = loadAll();
@@ -43,7 +49,17 @@ public class SiteSettingService {
                 ? values.get(KEY_SITE_NAME) : DEFAULT_SITE_NAME);
         String logo = values.get(KEY_SITE_LOGO);
         vo.setLogo(StringUtils.hasText(logo) ? logo : null);
+        vo.setMaxUploadBytes(parseMaxUploadBytes());
         return vo;
+    }
+
+    /** 解析上传上限（配置非法时回退 20MB，避免因配置笔误导致前端无限放开） */
+    private long parseMaxUploadBytes() {
+        try {
+            return DataSize.parse(maxFileSize).toBytes();
+        } catch (IllegalArgumentException e) {
+            return DataSize.ofMegabytes(20).toBytes();
+        }
     }
 
     /** 更新站点设置：仅系统管理员，名称必填且限长，LOGO 必须是本站上传图片地址 */

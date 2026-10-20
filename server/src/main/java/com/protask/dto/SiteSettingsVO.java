@@ -13,4 +13,7 @@ public class SiteSettingsVO {
 
     /** 应用 LOGO 图片 URL（未配置时为 null，前端回退内置默认 LOGO） */
     private String logo;
+
+    /** 单文件上传上限（字节），前端据此做上传前预校验 */
+    private long maxUploadBytes;
 }

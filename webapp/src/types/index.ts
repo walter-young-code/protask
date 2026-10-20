@@ -221,6 +221,36 @@ export interface ProjectCleanupVO {
   notifications: number
 }
 
+/** 存储桶用量 */
+export interface StorageBucketVO {
+  fileCount: number
+  totalBytes: number
+}
+
+/** 存储用量与孤儿图片统计（管理后台） */
+export interface StorageStatsVO {
+  publicImages: StorageBucketVO
+  privateAttachments: StorageBucketVO
+  attachmentRecords: number
+  uploadImageRecords: number
+  /** 无引用且超过保留期的孤儿图片数 */
+  orphanImages: number
+  orphanImageBytes: number
+  /** 孤儿图片保留天数 */
+  orphanRetentionDays: number
+  warnFileCount: number
+  warnTotalBytes: number
+  /** 是否已超过告警阈值 */
+  warning: boolean
+}
+
+/** 孤儿图片清理结果 */
+export interface StorageCleanupVO {
+  deletedImages: number
+  deletedFiles: number
+  freedBytes: number
+}
+
 /** 项目成员视图 */
 export interface ProjectMemberVO {
   userId: number
@@ -464,6 +494,8 @@ export interface ViewTab {
 export interface SiteSettingsVO {
   name: string
   logo: string | null
+  /** 单文件上传上限（字节），后端按 multipart 配置下发 */
+  maxUploadBytes: number
 }
 
 /** 更新站点设置请求（仅系统管理员） */

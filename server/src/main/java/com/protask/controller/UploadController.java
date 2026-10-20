@@ -9,8 +9,8 @@ import com.protask.dto.UploadVO;
 import com.protask.entity.UploadImage;
 import com.protask.mapper.UploadImageMapper;
 import com.protask.permission.PermissionService;
+import com.protask.storage.StorageRegistry;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -21,9 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.io.InputStream;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
@@ -41,9 +39,7 @@ public class UploadController {
 
     private final UploadImageMapper uploadImageMapper;
     private final PermissionService permissionService;
-
-    @Value("${protask.upload-dir:uploads}")
-    private String uploadDir;
+    private final StorageRegistry storageRegistry;
 
     /** 上传图片，返回可通过 /api/v1/upload/files/** 访问的 URL，并记录归属 */
     @PostMapping("/image")
@@ -60,10 +56,10 @@ public class UploadController {
         if (!ALLOWED_EXTENSIONS.contains(extension)) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "upload.notImage");
         }
-        Path dir = Paths.get(uploadDir).toAbsolutePath().normalize();
-        Files.createDirectories(dir);
         String filename = UUID.randomUUID().toString().replace("-", "") + "." + extension;
-        file.transferTo(dir.resolve(filename).toFile());
+        try (InputStream content = file.getInputStream()) {
+            storageRegistry.publicImages().store(filename, content);
+        }
 
         UploadImage record = new UploadImage();
         record.setStoredName(filename);
@@ -73,7 +69,7 @@ public class UploadController {
         } catch (RuntimeException e) {
             // 归属记录写入失败时清理已落盘的文件，避免产生无主孤儿文件
             try {
-                Files.deleteIfExists(dir.resolve(filename));
+                storageRegistry.publicImages().delete(filename);
             } catch (IOException ignored) {
                 // 清理失败仅丢失本次文件，不阻断异常上抛
             }
@@ -110,12 +106,11 @@ public class UploadController {
             // 无归属记录或非本人文件统一拒绝，不泄露文件是否存在
             throw new BusinessException(ResultCode.FORBIDDEN, "upload.deleteDenied");
         }
-        Path file = Paths.get(uploadDir).toAbsolutePath().normalize().resolve(filename);
-        if (!Files.exists(file)) {
+        if (!storageRegistry.publicImages().exists(filename)) {
             throw new BusinessException(ResultCode.NOT_FOUND, "upload.fileNotFound");
         }
         try {
-            Files.delete(file);
+            storageRegistry.publicImages().delete(filename);
         } catch (IOException e) {
             throw new BusinessException(ResultCode.INTERNAL_ERROR, "upload.deleteFailed");
         }

@@ -1,10 +1,12 @@
 package com.protask.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.protask.common.BlockTypes;
 import com.protask.common.BusinessException;
 import com.protask.common.ResultCode;
 import com.protask.dto.AttachmentVO;
+import com.protask.dto.PageResult;
 import com.protask.entity.Attachment;
 import com.protask.entity.Block;
 import com.protask.entity.User;
@@ -13,6 +15,8 @@ import com.protask.mapper.BlockMapper;
 import com.protask.mapper.UserMapper;
 import com.protask.permission.PermissionService;
 import com.protask.permission.ProjectPermission;
+import com.protask.storage.FileStorage;
+import com.protask.storage.StorageRegistry;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,9 +26,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.io.InputStream;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -56,9 +60,19 @@ public class AttachmentService {
     /** 图片扩展名子集：需公开访问（Markdown 引用与缩略图无法携带 token） */
     private static final Set<String> IMAGE_EXTENSIONS = Set.of("png", "jpg", "jpeg", "gif", "webp", "bmp");
 
-    /** 存储文件名格式校验（防路径穿越） */
-    private static final Pattern STORED_NAME_PATTERN = Pattern.compile("[0-9a-f]{32}\\.("
-            + String.join("|", ALLOWED_EXTENSIONS) + ")");
+    /**
+     * 存储相对路径格式校验（防路径穿越）：{projectId}/{taskId}/{uuid}.{ext}，
+     * 兼容早期扁平文件名（仅 uuid.ext）。
+     */
+    private static final Pattern STORED_NAME_PATTERN = Pattern.compile(
+            "(?:\\d{1,19}/\\d{1,19}/)?[0-9a-f]{32}\\.("
+                    + String.join("|", ALLOWED_EXTENSIONS) + ")");
+
+    /** 附件列表默认分页大小 */
+    private static final long DEFAULT_PAGE_SIZE = 20;
+
+    /** 附件列表单页最大条数 */
+    private static final long MAX_PAGE_SIZE = 100;
 
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
@@ -66,13 +80,19 @@ public class AttachmentService {
     private final BlockMapper blockMapper;
     private final UserMapper userMapper;
     private final PermissionService permissionService;
+    private final StorageRegistry storageRegistry;
 
-    @Value("${protask.upload-dir:uploads}")
-    private String uploadDir;
+    /** 单任务附件数量上限（<=0 表示不限制） */
+    @Value("${protask.attachment.max-per-task:20}")
+    private int maxPerTask;
 
-    /** 非图片附件私有存储目录（不做静态映射，仅鉴权下载） */
-    @Value("${protask.attachment-dir:uploads-attachments}")
-    private String attachmentDir;
+    /** 单项目附件数量上限（<=0 表示不限制） */
+    @Value("${protask.attachment.max-per-project:0}")
+    private int maxPerProject;
+
+    /** 单用户每日上传附件数上限（<=0 表示不限制） */
+    @Value("${protask.attachment.max-per-user-per-day:0}")
+    private int maxPerUserPerDay;
 
     /**
      * 启动时迁移历史数据：早期非图片附件与图片混存在公开目录，
@@ -80,22 +100,24 @@ public class AttachmentService {
      */
     @PostConstruct
     void migrateLegacyAttachmentFiles() {
+        FileStorage publicStorage = storageRegistry.publicImages();
+        FileStorage privateStorage = storageRegistry.privateAttachments();
         try {
-            Path privateDir = attachmentDirPath();
-            Path publicDir = uploadDirPath();
             int moved = 0;
             for (Attachment attachment : attachmentMapper.selectList(null)) {
                 String storedName = attachment.getStoredName();
-                if (storedName == null || IMAGE_EXTENSIONS.contains(extensionOf(storedName))) {
+                // 分目录存储的新文件已在私有/公开目录就位，仅需迁移历史扁平文件
+                if (storedName == null || storedName.contains("/")
+                        || IMAGE_EXTENSIONS.contains(extensionOf(storedName))) {
                     continue;
                 }
-                Path source = publicDir.resolve(storedName);
-                Path target = privateDir.resolve(storedName);
-                if (!Files.exists(source) || Files.exists(target)) {
+                if (!publicStorage.exists(storedName) || privateStorage.exists(storedName)) {
                     continue;
                 }
-                Files.createDirectories(privateDir);
-                Files.move(source, target);
+                try (InputStream content = publicStorage.open(storedName)) {
+                    privateStorage.store(storedName, content);
+                }
+                publicStorage.delete(storedName);
                 moved++;
             }
             if (moved > 0) {
@@ -107,7 +129,8 @@ public class AttachmentService {
     }
 
     /**
-     * 上传附件到任务（需卡片管理权限）：图片进公开目录，非图片进私有目录。
+     * 上传附件到任务（需卡片管理权限）：图片进公开目录，非图片进私有目录；
+     * 文件按 {projectId}/{taskId}/ 分目录存放，落盘前校验数量配额。
      */
     public AttachmentVO upload(Long userId, Long taskId, MultipartFile file) throws IOException {
         if (file == null || file.isEmpty()) {
@@ -119,12 +142,18 @@ public class AttachmentService {
         }
         Block card = getCard(taskId);
         permissionService.checkPermission(userId, card.getProjectId(), ProjectPermission.MANAGE_PROJECT_CARDS);
+        // 配额校验必须在落盘前执行，避免超限文件先写盘再删除
+        checkQuota(userId, taskId, card.getProjectId());
 
         boolean image = IMAGE_EXTENSIONS.contains(extension);
-        Path dir = image ? uploadDirPath() : attachmentDirPath();
-        Files.createDirectories(dir);
-        String storedName = UUID.randomUUID().toString().replace("-", "") + "." + extension;
-        file.transferTo(dir.resolve(storedName).toFile());
+        // 分目录存储：同一任务的文件聚在一起，避免单目录文件数无限膨胀
+        FileStorage storage = image
+                ? storageRegistry.publicImages() : storageRegistry.privateAttachments();
+        String fileName = UUID.randomUUID().toString().replace("-", "") + "." + extension;
+        String storedName = card.getProjectId() + "/" + taskId + "/" + fileName;
+        try (InputStream content = file.getInputStream()) {
+            storage.store(storedName, content);
+        }
 
         Attachment attachment = new Attachment();
         attachment.setTaskId(taskId);
@@ -138,7 +167,7 @@ public class AttachmentService {
         } catch (RuntimeException e) {
             // 记录写入失败时清理已落盘的文件，避免产生无主孤儿文件
             try {
-                Files.deleteIfExists(dir.resolve(storedName));
+                storage.delete(storedName);
             } catch (IOException ignored) {
                 // 清理失败仅丢失本次文件，不阻断异常上抛
             }
@@ -148,22 +177,57 @@ public class AttachmentService {
     }
 
     /**
-     * 查询任务附件列表（需查看权限），按上传时间倒序。
+     * 分页查询任务附件列表（需查看权限），按上传时间倒序；
+     * 同一时间戳按 ID 倒序兜底，避免翻页时记录重复或遗漏。
      */
-    public List<AttachmentVO> list(Long userId, Long taskId) {
+    public PageResult<AttachmentVO> page(Long userId, Long taskId, Long page, Long size) {
         Block card = getCard(taskId);
         permissionService.checkPermission(userId, card.getProjectId(), ProjectPermission.VIEW_PROJECT);
-        List<Attachment> attachments = attachmentMapper.selectList(new LambdaQueryWrapper<Attachment>()
-                .eq(Attachment::getTaskId, taskId)
-                .orderByDesc(Attachment::getCreateAt));
+        long pageNo = page == null || page < 1 ? 1 : page;
+        long pageSize = size == null || size < 1 ? DEFAULT_PAGE_SIZE : Math.min(size, MAX_PAGE_SIZE);
+        Page<Attachment> result = attachmentMapper.selectPage(new Page<>(pageNo, pageSize),
+                new LambdaQueryWrapper<Attachment>()
+                        .eq(Attachment::getTaskId, taskId)
+                        .orderByDesc(Attachment::getCreateAt)
+                        .orderByDesc(Attachment::getId));
         // 批量查询上传人昵称，避免逐条附件查询用户（N+1）
-        Map<Long, String> nicknames = loadNicknames(attachments.stream()
+        Map<Long, String> nicknames = loadNicknames(result.getRecords().stream()
                 .map(Attachment::getCreatedBy).filter(Objects::nonNull).distinct().toList());
         List<AttachmentVO> vos = new ArrayList<>();
-        for (Attachment attachment : attachments) {
+        for (Attachment attachment : result.getRecords()) {
             vos.add(toVO(attachment, nicknames.get(attachment.getCreatedBy())));
         }
-        return vos;
+        return new PageResult<>(result.getTotal(), vos);
+    }
+
+    /**
+     * 上传前校验数量配额（<=0 表示不限制）：单任务、单项目、单用户每日。
+     */
+    private void checkQuota(Long userId, Long taskId, Long projectId) {
+        if (maxPerTask > 0
+                && attachmentMapper.selectCount(new LambdaQueryWrapper<Attachment>()
+                        .eq(Attachment::getTaskId, taskId)) >= maxPerTask) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "attachment.taskQuotaExceeded",
+                    String.valueOf(maxPerTask));
+        }
+        if (maxPerProject > 0) {
+            List<Long> taskIds = blockMapper.selectList(new LambdaQueryWrapper<Block>()
+                            .eq(Block::getProjectId, projectId))
+                    .stream().map(Block::getId).toList();
+            long projectCount = taskIds.isEmpty() ? 0 : attachmentMapper.selectCount(
+                    new LambdaQueryWrapper<Attachment>().in(Attachment::getTaskId, taskIds));
+            if (projectCount >= maxPerProject) {
+                throw new BusinessException(ResultCode.BAD_REQUEST, "attachment.projectQuotaExceeded",
+                        String.valueOf(maxPerProject));
+            }
+        }
+        if (maxPerUserPerDay > 0
+                && attachmentMapper.selectCount(new LambdaQueryWrapper<Attachment>()
+                        .eq(Attachment::getCreatedBy, userId)
+                        .ge(Attachment::getCreateAt, LocalDateTime.now().with(LocalTime.MIN))) >= maxPerUserPerDay) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "attachment.userQuotaExceeded",
+                    String.valueOf(maxPerUserPerDay));
+        }
     }
 
     /**
@@ -181,7 +245,7 @@ public class AttachmentService {
         }
         // 删除磁盘文件（不存在则忽略，保证删除幂等；私有/公开目录均覆盖）
         try {
-            Files.deleteIfExists(resolveFilePath(attachment));
+            deleteStoredFile(attachment.getStoredName());
         } catch (IOException e) {
             throw new BusinessException(ResultCode.INTERNAL_ERROR, "upload.deleteFailed");
         }
@@ -216,7 +280,7 @@ public class AttachmentService {
                 continue;
             }
             try {
-                Files.deleteIfExists(resolveFilePath(attachment));
+                deleteStoredFile(attachment.getStoredName());
             } catch (IOException e) {
                 log.warn("项目删除级联清理：删除附件文件失败 id={}, storedName={}",
                         attachment.getId(), attachment.getStoredName(), e);
@@ -247,8 +311,9 @@ public class AttachmentService {
                 continue;
             }
             try {
-                Files.deleteIfExists(resolveFilePath(attachment));
-                files++;
+                if (deleteStoredFile(attachment.getStoredName())) {
+                    files++;
+                }
             } catch (IOException e) {
                 log.warn("项目物理清理：删除附件文件失败 id={}, storedName={}",
                         attachment.getId(), attachment.getStoredName(), e);
@@ -296,21 +361,21 @@ public class AttachmentService {
     }
 
     /**
-     * 准备鉴权下载（需查看权限）：校验附件归属后返回文件路径与元信息。
+     * 准备鉴权下载（需查看权限）：校验附件归属后打开对象流并返回元信息。
      */
-    public DownloadPayload prepareDownload(Long userId, Long taskId, Long attachmentId) {
+    public DownloadPayload prepareDownload(Long userId, Long taskId, Long attachmentId) throws IOException {
         Attachment attachment = requireAttachment(taskId, attachmentId);
         Block card = getCard(taskId);
         permissionService.checkPermission(userId, card.getProjectId(), ProjectPermission.VIEW_PROJECT);
-        Path file = resolveFilePath(attachment);
-        if (!Files.exists(file)) {
+        FileStorage storage = findStorage(attachment.getStoredName());
+        if (!storage.exists(attachment.getStoredName())) {
             throw new BusinessException(ResultCode.NOT_FOUND, "attachment.notFound");
         }
-        return new DownloadPayload(file, attachment);
+        return new DownloadPayload(storage.open(attachment.getStoredName()), attachment);
     }
 
-    /** 下载载荷：文件路径 + 附件元信息 */
-    public record DownloadPayload(Path file, Attachment attachment) {
+    /** 下载载荷：对象输入流 + 附件元信息（流由调用方负责关闭） */
+    public record DownloadPayload(InputStream content, Attachment attachment) {
     }
 
     /** 校验附件存在且属于指定任务 */
@@ -322,21 +387,27 @@ public class AttachmentService {
         return attachment;
     }
 
-    /** 定位附件磁盘文件：优先私有目录，兼容迁移前遗留在公开目录的文件 */
-    private Path resolveFilePath(Attachment attachment) {
-        Path privateFile = attachmentDirPath().resolve(attachment.getStoredName());
-        if (Files.exists(privateFile)) {
-            return privateFile;
+    /**
+     * 定位对象所在存储桶：私有优先、公开兜底（兼容历史扁平文件与两类分目录文件）。
+     */
+    private FileStorage findStorage(String storedName) {
+        FileStorage privateStorage = storageRegistry.privateAttachments();
+        return privateStorage.exists(storedName) ? privateStorage : storageRegistry.publicImages();
+    }
+
+    /**
+     * 删除对象（两个存储桶均尝试，不存在则忽略），返回是否实际删除了文件。
+     * 历史扁平文件可能遗留在公开目录，因此不能只按扩展名选桶。
+     */
+    private boolean deleteStoredFile(String storedName) throws IOException {
+        boolean deleted = false;
+        for (FileStorage storage : List.of(storageRegistry.privateAttachments(), storageRegistry.publicImages())) {
+            if (storage.exists(storedName)) {
+                storage.delete(storedName);
+                deleted = true;
+            }
         }
-        return uploadDirPath().resolve(attachment.getStoredName());
-    }
-
-    private Path uploadDirPath() {
-        return Paths.get(uploadDir).toAbsolutePath().normalize();
-    }
-
-    private Path attachmentDirPath() {
-        return Paths.get(attachmentDir).toAbsolutePath().normalize();
+        return deleted;
     }
 
     /**

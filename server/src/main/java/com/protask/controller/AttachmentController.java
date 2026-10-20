@@ -3,6 +3,7 @@ package com.protask.controller;
 import cn.dev33.satoken.stp.StpUtil;
 import com.protask.common.Result;
 import com.protask.dto.AttachmentVO;
+import com.protask.dto.PageResult;
 import com.protask.entity.Attachment;
 import com.protask.service.AttachmentService;
 import jakarta.servlet.http.HttpServletResponse;
@@ -17,10 +18,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.util.List;
 import java.util.Locale;
 
 /**
@@ -34,10 +34,12 @@ public class AttachmentController {
 
     private final AttachmentService attachmentService;
 
-    /** 查询任务附件列表 */
+    /** 分页查询任务附件列表（不传 page/size 时返回第一页） */
     @GetMapping
-    public Result<List<AttachmentVO>> list(@PathVariable Long taskId) {
-        return Result.ok(attachmentService.list(StpUtil.getLoginIdAsLong(), taskId));
+    public Result<PageResult<AttachmentVO>> list(@PathVariable Long taskId,
+                                                 @RequestParam(required = false) Long page,
+                                                 @RequestParam(required = false) Long size) {
+        return Result.ok(attachmentService.page(StpUtil.getLoginIdAsLong(), taskId, page, size));
     }
 
     /** 上传附件到任务 */
@@ -66,7 +68,9 @@ public class AttachmentController {
                 .replace("+", "%20");
         response.setHeader("Content-Disposition",
                 disposition + "; filename=\"" + encodedName + "\"; filename*=UTF-8''" + encodedName);
-        Files.copy(payload.file(), response.getOutputStream());
+        try (InputStream content = payload.content()) {
+            content.transferTo(response.getOutputStream());
+        }
     }
 
     /** 删除附件（同步移除任务描述中的 Markdown 引用） */

@@ -1,4 +1,8 @@
 import { del, get, getBlob, post } from './request'
+import type { PageResult } from '@/types'
+
+/** 附件列表分页大小 */
+export const ATTACHMENT_PAGE_SIZE = 20
 
 /** 附件视图（与后端 AttachmentVO 对应） */
 export interface AttachmentVO {
@@ -39,8 +43,9 @@ export async function previewAttachment(url: string): Promise<void> {
   setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
 }
 
-/** 查询任务附件列表 */
-export const listAttachments = (taskId: number) => get<AttachmentVO[]>(`/v1/tasks/${taskId}/attachments`)
+/** 分页查询任务附件列表（按上传时间倒序） */
+export const listAttachments = (taskId: number, params?: { page?: number; size?: number }) =>
+  get<PageResult<AttachmentVO>>(`/v1/tasks/${taskId}/attachments`, params as Record<string, unknown>)
 
 /** 上传附件到任务 */
 export const uploadAttachment = (taskId: number, file: File) => {

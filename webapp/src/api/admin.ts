@@ -10,6 +10,8 @@ import type {
   ProjectTemplateVO,
   ProjectVO,
   ResetPasswordRequest,
+  StorageCleanupVO,
+  StorageStatsVO,
   TeamRequest,
   TeamVO,
 } from '@/types'
@@ -79,3 +81,9 @@ export const statDeletedProjects = (before: string) =>
 /** 物理清理指定日期前（含当天）已软删的项目：级联删除块/附件/成员/通知（仅系统管理员） */
 export const cleanupDeletedProjects = (before: string) =>
   del<ProjectCleanupVO>(`/v1/admin/projects/deleted?before=${encodeURIComponent(before)}`)
+
+/** 存储用量与孤儿图片统计（仅系统管理员） */
+export const getStorageStats = () => get<StorageStatsVO>('/v1/admin/storage')
+
+/** 清理无引用且超过保留期的孤儿图片（仅系统管理员） */
+export const cleanupOrphanImages = () => del<StorageCleanupVO>('/v1/admin/storage/orphans')

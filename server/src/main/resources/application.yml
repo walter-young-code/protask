@@ -24,9 +24,10 @@ spring:
     fallback-to-system-locale: false
   servlet:
     multipart:
-      # 单文件最大 5MB（图片分辨率已在前端限制 640×640，此处兜底防滥用）
-      max-file-size: 5MB
-      max-request-size: 5MB
+      # 单文件上限（默认 20MB，可用 PROTASK_MAX_FILE_SIZE 覆盖）；前端预校验值经 /api/v1/site/settings 下发
+      max-file-size: ${PROTASK_MAX_FILE_SIZE:20MB}
+      # 预留批量上传余量（当前前端串行单文件上传）
+      max-request-size: ${PROTASK_MAX_REQUEST_SIZE:50MB}
   mvc:
     locale: zh_CN
 
@@ -40,6 +41,21 @@ protask:
   upload-dir: uploads
   # 非图片附件私有存储目录（不做静态映射，仅通过鉴权下载接口访问）
   attachment-dir: uploads-attachments
+  # 任务附件数量配额（<=0 表示不限制）：单任务默认限 20 个，防止单任务无限堆积
+  attachment:
+    max-per-task: 20
+    max-per-project: 0
+    max-per-user-per-day: 0
+  # 存储巡检：定时统计两个存储目录并超阈值告警；孤儿图片清理由管理后台手动触发
+  storage:
+    # 巡检 cron（默认每天 03:00）
+    check-cron: "${PROTASK_STORAGE_CHECK_CRON:0 0 3 * * *}"
+    # 文件数告警阈值（两桶合计）
+    warn-file-count: 50000
+    # 总占用告警阈值（字节，默认 5GB）
+    warn-total-bytes: 5368709120
+    # 无引用图片保留天数（上传未满该天数的图片不清理）
+    orphan-retention-days: 7
   auth:
     # 认证接口限流：单 IP 每分钟最大次数，<=0 关闭限流
     rate-limit:
