@@ -7,7 +7,8 @@
  * 3. 任务 properties 必须严格对照项目 cardProperties 模板逐项校验：
  *    未知属性 id 一律拒绝；select/multiSelect 值必须命中选项；
  *    date 归一化为 YYYY-MM-DD；member 必须是项目成员 ID
- * 4. 所有校验失败抛出带纠正指引的 ValidationError，引导 Agent 修正而非盲目重试
+ * 4. 附件上传前校验扩展名白名单与单文件大小上限
+ * 5. 所有校验失败抛出带纠正指引的 ValidationError，引导 Agent 修正而非盲目重试
  */
 
 import type { CardPropertyDef, ProjectMemberVO } from './client.js'
@@ -194,4 +195,60 @@ export function validateMentionIds(mentionUserIds: number[], members: ProjectMem
     }
   }
   return ids
+}
+
+/* ------------------------- 附件预检 ------------------------- */
+
+/**
+ * 后端允许的附件扩展名白名单（与 server 端 AttachmentService.ALLOWED_EXTENSIONS 保持一致）。
+ * 两侧必须同步修改，否则会出现 MCP 放行但后端拒绝的错位。
+ */
+const ATTACHMENT_EXTENSIONS = [
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp',
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+  'txt', 'md', 'csv', 'zip', 'rar', '7z',
+]
+
+/** 白名单提示文本，供工具描述直接引用 */
+export const ATTACHMENT_EXTENSION_HINT = ATTACHMENT_EXTENSIONS.join('/')
+
+/** 字节数转为人类可读文本（用于错误提示与工具描述） */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`
+}
+
+/**
+ * 附件文件名净化：去控制字符与路径分隔符（防止用文件名伪造目录），
+ * 折叠空白并限制长度；净化后为空则拒绝。
+ */
+export function sanitizeAttachmentFilename(raw: string): string {
+  if (typeof raw !== 'string') fail('filename 必须是字符串')
+  let name = raw.replace(CONTROL_CHARS_RE, '').replace(/[\\/]+/g, '_').trim()
+  name = name.replace(/\s{2,}/g, ' ')
+  if (!name) fail('filename 不能为空（净化后无有效内容）')
+  if (name.length > 255) fail(`filename 长度不能超过 255 个字符（当前 ${name.length}）`)
+  return name
+}
+
+/**
+ * 附件上传预检：扩展名白名单、非空文件、单文件大小上限。
+ * 返回小写扩展名；不合规时抛 ValidationError 并给出纠正指引。
+ */
+export function validateAttachment(filename: string, size: number, maxBytes: number): string {
+  const dot = filename.lastIndexOf('.')
+  const ext = dot < 0 ? '' : filename.slice(dot + 1).toLowerCase()
+  if (!ext || !ATTACHMENT_EXTENSIONS.includes(ext)) {
+    fail(
+      `不支持的文件类型 "${ext || '(无扩展名)'}"，禁止上传。` +
+        `后端仅接受: ${ATTACHMENT_EXTENSION_HINT}。请先转换格式或改用支持的扩展名。`,
+    )
+  }
+  if (size <= 0) fail('文件内容为空（0 字节），拒绝上传')
+  if (size > maxBytes) {
+    fail(`文件大小 ${formatBytes(size)} 超过单文件上限 ${formatBytes(maxBytes)}，请压缩或拆分后重试`)
+  }
+  return ext
 }

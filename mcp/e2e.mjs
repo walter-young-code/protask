@@ -61,7 +61,7 @@ function textOf(result) {
 const tools = await client.listTools()
 const names = tools.tools.map((t) => t.name)
 console.log('工具清单:', names.join(', '))
-check('注册了 12 个工具', names.length === 12)
+check('注册了 15 个工具', names.length === 15)
 
 // 2. 只读：项目列表
 const projects = await client.callTool({ name: 'list_projects', arguments: {} })

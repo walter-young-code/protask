@@ -14,15 +14,21 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
+import { basename, resolve } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { ApiError, ProTaskClient, type ProjectMemberVO } from './client.js'
 import {
+  ATTACHMENT_EXTENSION_HINT,
   ValidationError,
+  formatBytes,
+  sanitizeAttachmentFilename,
   sanitizeIcon,
   sanitizeMarkdown,
   sanitizeTitle,
+  validateAttachment,
   validateMentionIds,
   validateProperties,
 } from './guard.js'
@@ -82,6 +88,23 @@ interface ProjectVO {
   isTemplate?: boolean
 }
 
+interface AttachmentVO {
+  id: number
+  taskId: number
+  originalName: string
+  url: string
+  contentType?: string | null
+  size?: number
+  createdBy?: number
+  createdByName?: string | null
+  createdAt?: string
+}
+
+interface PageResultVO<T> {
+  total: number
+  records: T[]
+}
+
 /** 列表输出裁剪：描述截断，避免超大响应挤爆 Agent 上下文 */
 function compactTask(t: TaskVO): Record<string, unknown> {
   return {
@@ -125,10 +148,28 @@ async function loadProjectContext(projectId: number) {
   return { project, template, members }
 }
 
+/* ------------------------- 附件限制 ------------------------- */
+
+/**
+ * 解析单文件大小上限（与后端 PROTASK_MAX_FILE_SIZE 同源）：
+ * 支持 20MB / 1024KB / 纯字节数；无法识别时回退 20MB（与后端默认一致）。
+ */
+function parseMaxFileSize(raw: string | undefined): number {
+  const DEFAULT_BYTES = 20 * 1024 * 1024
+  if (!raw) return DEFAULT_BYTES
+  const match = raw.trim().match(/^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)?$/i)
+  if (!match) return DEFAULT_BYTES
+  const factors: Record<string, number> = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 }
+  const factor = factors[(match[2] || 'B').toUpperCase()] ?? 1
+  return Math.floor(Number(match[1]) * factor)
+}
+
+const MAX_ATTACHMENT_BYTES = parseMaxFileSize(process.env.PROTASK_MAX_FILE_SIZE)
+
 /* ------------------------- 服务定义 ------------------------- */
 
 const server = new McpServer(
-  { name: 'protask', version: '1.0.0' },
+  { name: 'protask', version: '1.1.0' },
   {
     instructions: `ProTask 团队任务管理系统的 MCP 服务。
 
@@ -138,7 +179,9 @@ const server = new McpServer(
 3. 日期一律 YYYY-MM-DD；成员类型属性一律使用成员 userId 数字。
 4. 标题必须是单行文本；正文使用纯 Markdown，不要夹带 HTML。
 5. 创建任务前先 list_tasks 确认无同名任务，避免重复创建；更新任务只传需要变更的字段。
-6. 删除操作必须显式传入 confirm=true，且仅当用户明确要求时执行。`,
+6. 删除操作必须显式传入 confirm=true，且仅当用户明确要求时执行。
+7. 附件：upload_attachment 仅接受本地文件路径，上传前会校验扩展名白名单与单文件大小上限；
+   图片上传后可用返回的 url 在 Markdown 中引用，其他类型需用 download_attachment 先落盘再处理。`,
   },
 )
 
@@ -438,6 +481,120 @@ server.registerTool(
         mentionUserIds,
       }
       return json(await client.post<unknown>(`/api/v1/projects/${args.projectId}/blocks`, body))
+    } catch (err) {
+      return failResult(err)
+    }
+  },
+)
+
+/* ------------------------- 附件工具 ------------------------- */
+
+server.registerTool(
+  'list_attachments',
+  {
+    title: '查询任务附件列表',
+    description:
+      '分页列出任务附件（默认第 1 页、每页 20 条，单页最多 100 条）。图片附件的 url 为公开静态地址，非图片需调用 download_attachment 下载。只读。',
+    inputSchema: {
+      taskId: z.number().int().positive().describe('任务 ID'),
+      page: z.number().int().positive().optional().describe('页码，从 1 开始，默认 1'),
+      size: z.number().int().min(1).max(100).optional().describe('每页条数，默认 20，最大 100'),
+    },
+  },
+  async ({ taskId, page, size }) => {
+    try {
+      const params = new URLSearchParams()
+      if (page !== undefined) params.set('page', String(page))
+      if (size !== undefined) params.set('size', String(size))
+      const query = params.toString()
+      const result = await client.get<PageResultVO<AttachmentVO>>(
+        `/api/v1/tasks/${taskId}/attachments${query ? `?${query}` : ''}`,
+      )
+      return json({
+        total: result.total,
+        page: page ?? 1,
+        size: size ?? 20,
+        attachments: result.records.map((a) => ({
+          id: a.id,
+          originalName: a.originalName,
+          contentType: a.contentType ?? null,
+          size: a.size ?? 0,
+          sizeReadable: formatBytes(a.size ?? 0),
+          url: a.url,
+          createdByName: a.createdByName ?? null,
+          createdAt: a.createdAt ?? null,
+        })),
+      })
+    } catch (err) {
+      return failResult(err)
+    }
+  },
+)
+
+server.registerTool(
+  'upload_attachment',
+  {
+    title: '上传任务附件',
+    description:
+      `把本地文件上传为任务附件（需项目卡片管理权限）。上传前本地预检：` +
+      `扩展名必须在白名单内（${ATTACHMENT_EXTENSION_HINT}）；` +
+      `单文件不超过 ${formatBytes(MAX_ATTACHMENT_BYTES)}（与后端 PROTASK_MAX_FILE_SIZE 同源）；` +
+      `后端另有单任务 20 个的数量配额。图片返回的 url 可直接用于 Markdown 引用。`,
+    inputSchema: {
+      taskId: z.number().int().positive().describe('任务 ID'),
+      filePath: z.string().min(1).describe('本地文件绝对路径（MCP 服务所在机器）'),
+      filename: z.string().optional().describe('上传后的原始文件名，默认取 filePath 的文件名'),
+    },
+  },
+  async ({ taskId, filePath, filename }) => {
+    try {
+      const absolutePath = resolve(filePath)
+      const info = await stat(absolutePath).catch(() => null)
+      if (!info) throw new ValidationError(`本地文件不存在或不可读: ${absolutePath}`)
+      if (!info.isFile()) throw new ValidationError(`filePath 必须是文件而不是目录: ${absolutePath}`)
+
+      const name = sanitizeAttachmentFilename(filename ?? basename(absolutePath))
+      validateAttachment(name, info.size, MAX_ATTACHMENT_BYTES)
+
+      const attachment = await client.uploadFile<AttachmentVO>(
+        `/api/v1/tasks/${taskId}/attachments`,
+        absolutePath,
+        name,
+      )
+      return json({
+        ...attachment,
+        hint: '图片附件可用返回的 url 在任务描述/评论中 Markdown 引用；非图片需通过 download_attachment 下载',
+      })
+    } catch (err) {
+      return failResult(err)
+    }
+  },
+)
+
+server.registerTool(
+  'download_attachment',
+  {
+    title: '下载任务附件到本地',
+    description:
+      '把附件下载到本地文件（自动创建父目录，同名文件会被覆盖）。返回本地路径、字节数与 Content-Type；只搬运文件，不解析文件内容。只读。',
+    inputSchema: {
+      taskId: z.number().int().positive().describe('任务 ID'),
+      attachmentId: z.number().int().positive().describe('附件 ID（来自 list_attachments）'),
+      destPath: z.string().min(1).describe('本地保存路径（绝对路径，包含文件名）'),
+    },
+  },
+  async ({ taskId, attachmentId, destPath }) => {
+    try {
+      const absolutePath = resolve(destPath)
+      const existing = await stat(absolutePath).catch(() => null)
+      if (existing?.isDirectory()) {
+        throw new ValidationError(`destPath 必须是文件路径，不能是已存在的目录: ${absolutePath}`)
+      }
+      const result = await client.downloadToFile(
+        `/api/v1/tasks/${taskId}/attachments/${attachmentId}/download`,
+        absolutePath,
+      )
+      return json(result)
     } catch (err) {
       return failResult(err)
     }
