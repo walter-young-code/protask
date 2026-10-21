@@ -11,12 +11,15 @@ import com.protask.dto.ProjectToTemplateRequest;
 import com.protask.dto.ProjectVO;
 import com.protask.entity.Block;
 import com.protask.entity.Project;
+import com.protask.entity.ProjectCategory;
+import com.protask.entity.ProjectCategoryAssignment;
 import com.protask.entity.ProjectMember;
 import com.protask.entity.User;
 import com.protask.mapper.BlockMapper;
 import com.protask.mapper.NotificationMapper;
 import com.protask.mapper.ProjectMapper;
 import com.protask.mapper.ProjectMemberMapper;
+import com.protask.mapper.ProjectCategoryAssignmentMapper;
 import com.protask.mapper.ProjectCategoryMapper;
 import com.protask.mapper.UserMapper;
 import com.protask.permission.PermissionService;
@@ -78,6 +81,9 @@ class ProjectServiceTest {
     private ProjectCategoryMapper projectCategoryMapper;
 
     @Mock
+    private ProjectCategoryAssignmentMapper assignmentMapper;
+
+    @Mock
     private UserMapper userMapper;
 
     @Mock
@@ -100,8 +106,8 @@ class ProjectServiceTest {
     @BeforeEach
     void setUp() {
         projectService = new ProjectService(
-                projectMapper, projectMemberMapper, projectCategoryMapper, blockMapper, userMapper,
-                permissionService, blockService, attachmentService, notificationMapper);
+                projectMapper, projectMemberMapper, projectCategoryMapper, assignmentMapper, blockMapper,
+                userMapper, permissionService, blockService, attachmentService, notificationMapper);
     }
 
     private Project projectWithTemplate(String template) {
@@ -481,7 +487,6 @@ class ProjectServiceTest {
         project.setDescription("管理客户信息");
         project.setType("P");
         project.setIcon("🏢");
-        project.setCategoryId(7L);
         project.setCardProperties("[{\"id\":\"p1\",\"name\":\"优先级\",\"type\":\"select\"}]");
         project.setProperties("{\"defaultViewId\":5}");
         project.setOwnerId(9L);
@@ -512,6 +517,12 @@ class ProjectServiceTest {
         when(permissionService.getEffectiveRole(USER_ID, PROJECT_ID)).thenReturn(ProjectRole.ADMIN);
         when(blockService.copyBlocksFromProject(PROJECT_ID, 400L, USER_ID)).thenReturn(Map.of(5L, 55L));
         Project[] inserted = stubCopyInsert();
+        // 复制者视角的归类：第 1 次查命中原项目归类，第 2 次查无副本归类，第 3 次填充详情无归类
+        ProjectCategoryAssignment sourceAssignment = new ProjectCategoryAssignment();
+        sourceAssignment.setUserId(USER_ID);
+        sourceAssignment.setProjectId(PROJECT_ID);
+        sourceAssignment.setCategoryId(7L);
+        when(assignmentMapper.selectOne(any())).thenReturn(sourceAssignment, null, null);
 
         ProjectCopyRequest request = new ProjectCopyRequest();
         request.setName("客户系统副本");
@@ -522,11 +533,17 @@ class ProjectServiceTest {
         assertEquals("管理客户信息", copy.getDescription());
         assertEquals("P", copy.getType());
         assertEquals("🏢", copy.getIcon());
-        assertEquals(7L, copy.getCategoryId());
         assertEquals(sourceProject().getCardProperties(), copy.getCardProperties());
         assertEquals(USER_ID, copy.getOwnerId());
         assertEquals(USER_ID, copy.getCreatedBy());
         assertFalse(copy.getIsTemplate());
+        // 副本继承复制者视角的归类
+        ArgumentCaptor<ProjectCategoryAssignment> assignmentCaptor =
+                ArgumentCaptor.forClass(ProjectCategoryAssignment.class);
+        verify(assignmentMapper).insert(assignmentCaptor.capture());
+        assertEquals(USER_ID, assignmentCaptor.getValue().getUserId());
+        assertEquals(400L, assignmentCaptor.getValue().getProjectId());
+        assertEquals(7L, assignmentCaptor.getValue().getCategoryId());
         ArgumentCaptor<ProjectMember> memberCaptor = ArgumentCaptor.forClass(ProjectMember.class);
         verify(projectMemberMapper).insert(memberCaptor.capture());
         assertEquals(400L, memberCaptor.getValue().getProjectId());
@@ -722,5 +739,97 @@ class ProjectServiceTest {
         assertEquals("project.notArchived", ex.getMessageKey());
         verify(blockService, never()).softDeleteByProject(any(), any());
         verify(projectMapper, never()).updateById(any(Project.class));
+    }
+
+    // ---------- 项目归类（按用户独立） ----------
+
+    /** 归类不存在时新增记录 */
+    @Test
+    void assignCategoryInsertsWhenAbsent() {
+        Project project = sourceProject();
+        project.setOwnerId(USER_ID);
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(project);
+        ProjectCategory category = new ProjectCategory();
+        category.setId(7L);
+        category.setName("工作");
+        category.setCreatedBy(USER_ID);
+        when(projectCategoryMapper.selectById(7L)).thenReturn(category);
+        when(assignmentMapper.selectOne(any())).thenReturn(null);
+        when(permissionService.getEffectiveRole(USER_ID, PROJECT_ID)).thenReturn(ProjectRole.ADMIN);
+
+        projectService.assignCategory(USER_ID, PROJECT_ID, 7L);
+
+        ArgumentCaptor<ProjectCategoryAssignment> captor =
+                ArgumentCaptor.forClass(ProjectCategoryAssignment.class);
+        verify(assignmentMapper).insert(captor.capture());
+        assertEquals(USER_ID, captor.getValue().getUserId());
+        assertEquals(PROJECT_ID, captor.getValue().getProjectId());
+        assertEquals(7L, captor.getValue().getCategoryId());
+    }
+
+    /** categoryId 为 0 时清除已有归类 */
+    @Test
+    void assignCategoryClearsWhenZero() {
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(sourceProject());
+        ProjectCategoryAssignment existing = new ProjectCategoryAssignment();
+        existing.setId(50L);
+        existing.setUserId(USER_ID);
+        existing.setProjectId(PROJECT_ID);
+        existing.setCategoryId(7L);
+        when(assignmentMapper.selectOne(any())).thenReturn(existing);
+        when(permissionService.getEffectiveRole(USER_ID, PROJECT_ID)).thenReturn(ProjectRole.ADMIN);
+
+        projectService.assignCategory(USER_ID, PROJECT_ID, 0L);
+
+        verify(assignmentMapper).deleteById(50L);
+        verify(assignmentMapper, never()).insert(any(ProjectCategoryAssignment.class));
+    }
+
+    /** 不能使用他人分类归类 */
+    @Test
+    void assignCategoryRejectsForeignCategory() {
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(sourceProject());
+        ProjectCategory foreign = new ProjectCategory();
+        foreign.setId(7L);
+        foreign.setCreatedBy(999L);
+        when(projectCategoryMapper.selectById(7L)).thenReturn(foreign);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> projectService.assignCategory(USER_ID, PROJECT_ID, 7L));
+        assertEquals("category.notFound", ex.getMessageKey());
+        verify(assignmentMapper, never()).insert(any(ProjectCategoryAssignment.class));
+    }
+
+    /** 更新项目信息不再修改归类（归类走独立接口） */
+    @Test
+    void updateProjectDoesNotTouchAssignment() {
+        Project project = sourceProject();
+        project.setOwnerId(USER_ID);
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(project);
+        when(permissionService.getEffectiveRole(USER_ID, PROJECT_ID)).thenReturn(ProjectRole.ADMIN);
+        when(assignmentMapper.selectOne(any())).thenReturn(null);
+
+        ProjectRequest request = new ProjectRequest();
+        request.setName("改名");
+        request.setCategoryId(7L);
+        projectService.updateProject(USER_ID, PROJECT_ID, request);
+
+        verify(assignmentMapper, never()).insert(any(ProjectCategoryAssignment.class));
+    }
+
+    /** 移除成员时清理其个人归类 */
+    @Test
+    void removeMemberClearsAssignment() {
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(sourceProject());
+        ProjectMember member = new ProjectMember();
+        member.setId(30L);
+        member.setProjectId(PROJECT_ID);
+        member.setUserId(5L);
+        when(projectMemberMapper.selectOne(any())).thenReturn(member);
+
+        projectService.removeMember(USER_ID, PROJECT_ID, 5L);
+
+        verify(projectMemberMapper).deleteById(30L);
+        verify(assignmentMapper).delete(any());
     }
 }

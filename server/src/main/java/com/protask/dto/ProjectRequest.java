@@ -22,7 +22,7 @@ public class ProjectRequest {
     @Pattern(regexp = "^(O|P)$", message = "{validation.projectType.pattern}")
     private String type;
 
-    /** 项目分类ID：null 不修改；0 清除分类；>0 设为指定分类 */
+    /** 项目分类ID：仅创建时生效（null 不归类；0 未分类；>0 设为指定分类），更新归类请用 /projects/{id}/category */
     private Long categoryId;
 
     /** 项目图标 */

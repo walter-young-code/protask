@@ -76,6 +76,8 @@ export default {
     deleteCategoryConfirm:
       'Are you sure to delete category "{name}"? Projects under it will be moved to Uncategorized.',
     uncategorized: 'Uncategorized',
+    moveToCategory: 'Move to category',
+    categoryAssigned: 'Project category updated',
     adminCenter: 'Admin Center',
     changePassword: 'Change Password',
     inviteMember: 'Invite People',

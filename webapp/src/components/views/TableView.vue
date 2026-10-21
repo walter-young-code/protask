@@ -48,12 +48,14 @@ const { t } = useI18n()
       </el-table-column>
       <el-table-column v-if="editable" :label="t('task.columns.actions')" width="140" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" size="small" @click.stop="emit('open', row as TaskVO)">
-            {{ t('common.edit') }}
-          </el-button>
-          <el-button link type="danger" size="small" @click.stop="emit('delete', row as TaskVO)">
-            {{ t('common.delete') }}
-          </el-button>
+          <span class="row-actions">
+            <el-button link type="primary" size="small" @click.stop="emit('open', row as TaskVO)">
+              {{ t('common.edit') }}
+            </el-button>
+            <el-button link type="danger" size="small" @click.stop="emit('delete', row as TaskVO)">
+              {{ t('common.delete') }}
+            </el-button>
+          </span>
         </template>
       </el-table-column>
       <template #empty>
@@ -112,5 +114,27 @@ const { t } = useI18n()
 
 .task-title:hover {
   color: var(--el-color-primary);
+}
+
+/* 操作列按钮默认隐藏，仅在鼠标悬停任务行（或键盘聚焦）时显现 */
+:deep(.row-actions) {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+:deep(.el-table__row:hover) .row-actions,
+:deep(.el-table__row:focus-within) .row-actions,
+:deep(.el-table__row.hover-row) .row-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 触屏设备无悬停语义，操作按钮始终显示 */
+@media (hover: none) {
+  :deep(.row-actions) {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 </style>

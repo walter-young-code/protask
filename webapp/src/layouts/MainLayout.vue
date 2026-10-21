@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox, type InputInstance } from 'element-plus'
 import { appMessage } from '@/utils/appMessage'
-import { convertProjectToTemplate, copyProject } from '@/api/project'
+import { assignProjectCategory, convertProjectToTemplate, copyProject } from '@/api/project'
 import { createInvite } from '@/api/auth'
 import { useSiteStore } from '@/stores/site'
 import {
@@ -115,14 +115,19 @@ const groupedProjects = computed(() => {
     categories.push({ id: category.id, name: category.name, owned: true, projects })
     byCategory.delete(category.id)
   }
-  // 兜底：分类不在当前用户分类列表（如他人分类）时仍按原分组展示，避免项目从侧边栏消失
+  // 兜底：分类不在当前用户分类列表时按项目自带分类名展示；名称也缺失则归入未分类
   for (const [id, projects] of byCategory) {
-    categories.push({ id, name: '', owned: false, projects })
+    const name = projects[0]?.categoryName
+    if (!name) {
+      uncategorized.push(...projects)
+      continue
+    }
+    categories.push({ id, name, owned: false, projects })
   }
   return { uncategorized, categories }
 })
 
-/** 分类名（优先分类列表，缺失时用项目自带名称兜底） */
+/** 分类名（优先当前用户名下的分类列表，缺失时返回空串） */
 function categoryNameOf(id: number): string {
   return categoryStore.categories.find((c) => c.id === id)?.name ?? ''
 }
@@ -367,8 +372,22 @@ async function handleCategoryMenuCommand(command: string, id: number) {
   appMessage.success(t('layout.categoryDeleted'))
 }
 
-/** 项目项「···」菜单命令：编辑项目 / 复制项目 / 转为模板 / 归档项目 / 删除项目（菜单仅管理员可见），删除当前所在项目后跳回总览 */
+/** 调整项目归类：只影响本人侧边栏，categoryId 为 0 表示未分类 */
+async function handleAssignCategory(project: ProjectVO, categoryId?: number) {
+  // 展开子菜单时也会触发 command，忽略非数字参数
+  if (typeof categoryId !== 'number') return
+  await assignProjectCategory(project.id, categoryId || null)
+  await projectStore.fetchProjects()
+  appMessage.success(t('layout.categoryAssigned'))
+}
+
+/** 项目项「···」菜单命令：编辑项目 / 复制项目 / 转为模板 / 归档项目 / 删除项目（管理项仅管理员可见），删除当前所在项目后跳回总览 */
 async function handleProjectMenuCommand(command: string, project: ProjectVO) {
+  // 归类菜单项：assign-<categoryId>，assign-0 表示未分类
+  if (command.startsWith('assign-')) {
+    await handleAssignCategory(project, Number(command.slice('assign-'.length)))
+    return
+  }
   if (command === 'edit') {
     editingProject.value = project
     editProjectDialogVisible.value = true
@@ -633,7 +652,6 @@ function handleProjectEdited() {
               <span class="project-icon">{{ project.icon || '📋' }}</span>
               <span class="project-name">{{ project.name }}</span>
               <el-dropdown
-                v-if="isAdmin(project)"
                 trigger="click"
                 class="project-more-wrap"
                 @command="(cmd: string) => handleProjectMenuCommand(cmd, project)"
@@ -643,20 +661,36 @@ function handleProjectEdited() {
                 </span>
                 <template #dropdown>
                   <el-dropdown-menu>
-                    <el-dropdown-item command="edit" :icon="Edit">
-                      {{ t('projectDetail.editProject') }}
+                    <template v-if="isAdmin(project)">
+                      <el-dropdown-item command="edit" :icon="Edit">
+                        {{ t('projectDetail.editProject') }}
+                      </el-dropdown-item>
+                      <el-dropdown-item command="copy" :icon="CopyDocument">
+                        {{ t('dashboard.copyProject') }}
+                      </el-dropdown-item>
+                      <el-dropdown-item command="toTemplate" :icon="Collection">
+                        {{ t('template.convertToTemplate') }}
+                      </el-dropdown-item>
+                      <el-dropdown-item command="archive" :icon="Box">
+                        {{ t('dashboard.archiveProject') }}
+                      </el-dropdown-item>
+                      <el-dropdown-item command="delete" :icon="Delete">
+                        {{ t('common.delete') }}
+                      </el-dropdown-item>
+                    </template>
+                    <!-- 归类只影响本人侧边栏：所有成员都可将项目放进自己的分类 -->
+                    <el-dropdown-item disabled :divided="isAdmin(project)">
+                      {{ t('layout.moveToCategory') }}
                     </el-dropdown-item>
-                    <el-dropdown-item command="copy" :icon="CopyDocument">
-                      {{ t('dashboard.copyProject') }}
+                    <el-dropdown-item command="assign-0">
+                      {{ t('layout.uncategorized') }}
                     </el-dropdown-item>
-                    <el-dropdown-item command="toTemplate" :icon="Collection">
-                      {{ t('template.convertToTemplate') }}
-                    </el-dropdown-item>
-                    <el-dropdown-item command="archive" :icon="Box">
-                      {{ t('dashboard.archiveProject') }}
-                    </el-dropdown-item>
-                    <el-dropdown-item command="delete" :icon="Delete">
-                      {{ t('common.delete') }}
+                    <el-dropdown-item
+                      v-for="category in categoryStore.categories"
+                      :key="category.id"
+                      :command="`assign-${category.id}`"
+                    >
+                      {{ category.name }}
                     </el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
@@ -720,7 +754,6 @@ function handleProjectEdited() {
                 <span class="project-icon">{{ project.icon || '📋' }}</span>
                 <span class="project-name">{{ project.name }}</span>
                 <el-dropdown
-                  v-if="isAdmin(project)"
                   trigger="click"
                   class="project-more-wrap"
                   @command="(cmd: string) => handleProjectMenuCommand(cmd, project)"
@@ -730,20 +763,36 @@ function handleProjectEdited() {
                   </span>
                   <template #dropdown>
                     <el-dropdown-menu>
-                      <el-dropdown-item command="edit" :icon="Edit">
-                        {{ t('projectDetail.editProject') }}
+                      <template v-if="isAdmin(project)">
+                        <el-dropdown-item command="edit" :icon="Edit">
+                          {{ t('projectDetail.editProject') }}
+                        </el-dropdown-item>
+                        <el-dropdown-item command="copy" :icon="CopyDocument">
+                          {{ t('dashboard.copyProject') }}
+                        </el-dropdown-item>
+                        <el-dropdown-item command="toTemplate" :icon="Collection">
+                          {{ t('template.convertToTemplate') }}
+                        </el-dropdown-item>
+                        <el-dropdown-item command="archive" :icon="Box">
+                          {{ t('dashboard.archiveProject') }}
+                        </el-dropdown-item>
+                        <el-dropdown-item command="delete" :icon="Delete">
+                          {{ t('common.delete') }}
+                        </el-dropdown-item>
+                      </template>
+                      <!-- 归类只影响本人侧边栏：所有成员都可将项目放进自己的分类 -->
+                      <el-dropdown-item disabled :divided="isAdmin(project)">
+                        {{ t('layout.moveToCategory') }}
                       </el-dropdown-item>
-                      <el-dropdown-item command="copy" :icon="CopyDocument">
-                        {{ t('dashboard.copyProject') }}
+                      <el-dropdown-item command="assign-0">
+                        {{ t('layout.uncategorized') }}
                       </el-dropdown-item>
-                      <el-dropdown-item command="toTemplate" :icon="Collection">
-                        {{ t('template.convertToTemplate') }}
-                      </el-dropdown-item>
-                      <el-dropdown-item command="archive" :icon="Box">
-                        {{ t('dashboard.archiveProject') }}
-                      </el-dropdown-item>
-                      <el-dropdown-item command="delete" :icon="Delete">
-                        {{ t('common.delete') }}
+                      <el-dropdown-item
+                        v-for="category in categoryStore.categories"
+                        :key="category.id"
+                        :command="`assign-${category.id}`"
+                      >
+                        {{ category.name }}
                       </el-dropdown-item>
                     </el-dropdown-menu>
                   </template>

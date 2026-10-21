@@ -1,15 +1,14 @@
 package com.protask.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.protask.common.BusinessException;
 import com.protask.common.ResultCode;
 import com.protask.dto.CategoryRequest;
 import com.protask.dto.CategoryVO;
-import com.protask.entity.Project;
 import com.protask.entity.ProjectCategory;
+import com.protask.entity.ProjectCategoryAssignment;
+import com.protask.mapper.ProjectCategoryAssignmentMapper;
 import com.protask.mapper.ProjectCategoryMapper;
-import com.protask.mapper.ProjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
@@ -25,7 +24,7 @@ import java.util.List;
 public class ProjectCategoryService {
 
     private final ProjectCategoryMapper categoryMapper;
-    private final ProjectMapper projectMapper;
+    private final ProjectCategoryAssignmentMapper assignmentMapper;
 
     /** 查询当前用户的分类（按创建时间升序） */
     public List<CategoryVO> list(Long userId) {
@@ -85,7 +84,7 @@ public class ProjectCategoryService {
         return vo;
     }
 
-    /** 删除分类（仅创建者）：引用该分类的项目归入未分类 */
+    /** 删除分类（仅创建者）：仅清除该创建者名下该分类的归类，项目对他人无影响 */
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long userId, Long id) {
         ProjectCategory category = categoryMapper.selectById(id);
@@ -96,9 +95,9 @@ public class ProjectCategoryService {
             throw new BusinessException(ResultCode.FORBIDDEN, "category.deleteDenied");
         }
         categoryMapper.deleteById(id);
-        // 显式 SQL 置空，避免 MyBatis-Plus 对 null 字段的默认忽略
-        projectMapper.update(null, new LambdaUpdateWrapper<Project>()
-                .eq(Project::getCategoryId, id)
-                .set(Project::getCategoryId, null));
+        // 归类按用户独立：只清理该用户名下指向此分类的记录
+        assignmentMapper.delete(new LambdaQueryWrapper<ProjectCategoryAssignment>()
+                .eq(ProjectCategoryAssignment::getUserId, userId)
+                .eq(ProjectCategoryAssignment::getCategoryId, id));
     }
 }

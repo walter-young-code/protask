@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useI18n } from 'vue-i18n'
+import { assignProjectCategory } from '@/api/project'
 import { useProjectStore } from '@/stores/project'
 import { useCategoryStore } from '@/stores/category'
 import IconPicker from '@/components/IconPicker.vue'
@@ -24,6 +25,8 @@ const projectStore = useProjectStore()
 const categoryStore = useCategoryStore()
 const formRef = ref<FormInstance>()
 const loading = ref(false)
+/** 打开时的归类（仅编辑模式），用于判断是否需要调用归类接口 */
+const initialCategoryId = ref(0)
 const form = reactive({
   name: '',
   description: '',
@@ -50,6 +53,7 @@ watch(
       form.description = props.project?.description ?? ''
       form.type = props.project?.type ?? 'P'
       form.categoryId = props.project?.categoryId ?? 0
+      initialCategoryId.value = form.categoryId
       form.icon = props.project?.icon ?? ''
       if (!categoryStore.categories.length) {
         categoryStore.fetchCategories()
@@ -74,9 +78,12 @@ async function handleSubmit() {
         description: form.description || undefined,
         type: form.type,
         icon: form.icon,
-        // 0 表示清除分类，数字表示设置分类
-        categoryId: form.categoryId,
       })
+      // 归类按用户独立：走独立接口，避免覆盖其他成员的项目归类
+      if (form.categoryId !== initialCategoryId.value) {
+        await assignProjectCategory(props.project.id, form.categoryId || null)
+        await projectStore.fetchProjects()
+      }
       close()
       emit('updated', project)
     } else {
@@ -105,7 +112,7 @@ async function handleSubmit() {
     :close-on-click-modal="false"
     @update:model-value="emit('update:modelValue', $event)"
   >
-    <el-form ref="formRef" :model="form" :rules="rules" label-width="80px">
+    <el-form ref="formRef" :model="form" :rules="rules" label-width="96px">
       <el-form-item :label="t('projectDialog.iconLabel')">
         <IconPicker v-model="form.icon" addable />
         <span class="icon-hint">{{ t('projectDialog.iconHint') }}</span>

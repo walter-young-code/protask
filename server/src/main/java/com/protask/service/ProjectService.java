@@ -1,7 +1,6 @@
 package com.protask.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -30,11 +29,13 @@ import com.protask.entity.Block;
 import com.protask.entity.Notification;
 import com.protask.entity.Project;
 import com.protask.entity.ProjectCategory;
+import com.protask.entity.ProjectCategoryAssignment;
 import com.protask.entity.ProjectMember;
 import com.protask.entity.User;
 import com.protask.mapper.BlockMapper;
 import com.protask.mapper.NotificationMapper;
 import com.protask.mapper.ProjectCategoryMapper;
+import com.protask.mapper.ProjectCategoryAssignmentMapper;
 import com.protask.mapper.ProjectMapper;
 import com.protask.mapper.ProjectMemberMapper;
 import com.protask.mapper.UserMapper;
@@ -85,6 +86,7 @@ public class ProjectService {
     private final ProjectMapper projectMapper;
     private final ProjectMemberMapper projectMemberMapper;
     private final ProjectCategoryMapper projectCategoryMapper;
+    private final ProjectCategoryAssignmentMapper assignmentMapper;
     private final BlockMapper blockMapper;
     private final UserMapper userMapper;
     private final PermissionService permissionService;
@@ -109,13 +111,14 @@ public class ProjectService {
         project.setDescription(request.getDescription());
         project.setType(request.getType() != null ? request.getType() : "P");
         project.setIcon(request.getIcon());
-        project.setCategoryId(resolveCategoryId(userId, request.getCategoryId()));
         project.setCardProperties(DEFAULT_CARD_PROPERTIES);
         project.setOwnerId(userId);
         project.setCreatedBy(userId);
         project.setModifiedBy(userId);
         project.setStatus("active");
         projectMapper.insert(project);
+
+        writeAssignment(userId, project.getId(), resolveCategoryId(userId, request.getCategoryId()));
 
         ProjectMember member = new ProjectMember();
         member.setProjectId(project.getId());
@@ -215,7 +218,6 @@ public class ProjectService {
                 ? request.getDescription() : template.getDescription());
         project.setType(request.getType() != null ? request.getType() : "P");
         project.setIcon(request.getIcon() != null ? request.getIcon() : template.getIcon());
-        project.setCategoryId(resolveCategoryId(userId, request.getCategoryId()));
         project.setCardProperties(template.getCardProperties() != null
                 ? template.getCardProperties() : DEFAULT_CARD_PROPERTIES);
         project.setProperties(template.getProperties());
@@ -225,6 +227,8 @@ public class ProjectService {
         project.setStatus("active");
         project.setIsTemplate(false);
         projectMapper.insert(project);
+
+        writeAssignment(userId, project.getId(), resolveCategoryId(userId, request.getCategoryId()));
 
         ProjectMember member = new ProjectMember();
         member.setProjectId(project.getId());
@@ -252,7 +256,6 @@ public class ProjectService {
                 ? request.getDescription() : project.getDescription());
         template.setType("O");
         template.setIcon(project.getIcon());
-        template.setCategoryId(project.getCategoryId());
         template.setCardProperties(project.getCardProperties() != null
                 ? project.getCardProperties() : DEFAULT_CARD_PROPERTIES);
         template.setProperties(project.getProperties());
@@ -281,7 +284,6 @@ public class ProjectService {
                 ? request.getDescription() : project.getDescription());
         copy.setType(request != null && request.getType() != null ? request.getType() : project.getType());
         copy.setIcon(project.getIcon());
-        copy.setCategoryId(project.getCategoryId());
         copy.setCardProperties(project.getCardProperties() != null
                 ? project.getCardProperties() : DEFAULT_CARD_PROPERTIES);
         copy.setProperties(project.getProperties());
@@ -291,6 +293,12 @@ public class ProjectService {
         copy.setStatus("active");
         copy.setIsTemplate(false);
         projectMapper.insert(copy);
+
+        // 副本沿用复制者视角的归类（原项目在复制者侧边栏所属分类）
+        Long assignedCategoryId = findAssignedCategoryId(userId, projectId);
+        if (assignedCategoryId != null) {
+            writeAssignment(userId, copy.getId(), assignedCategoryId);
+        }
 
         ProjectMember member = new ProjectMember();
         member.setProjectId(copy.getId());
@@ -315,10 +323,7 @@ public class ProjectService {
         permissionService.checkPermission(userId, projectId, ProjectPermission.VIEW_PROJECT);
         ProjectVO vo = new ProjectVO();
         BeanUtils.copyProperties(project, vo);
-        if (project.getCategoryId() != null) {
-            ProjectCategory category = projectCategoryMapper.selectById(project.getCategoryId());
-            vo.setCategoryName(category != null ? category.getName() : null);
-        }
+        fillCategory(userId, projectId, vo);
         ProjectRole role = permissionService.getEffectiveRole(userId, projectId);
         if (role == ProjectRole.NONE && permissionService.isShareVisitor(projectId)) {
             // 分享访客：非成员仅凭分享链接只读访问，展示为只读成员
@@ -386,10 +391,7 @@ public class ProjectService {
         }
         ProjectVO vo = new ProjectVO();
         BeanUtils.copyProperties(project, vo);
-        if (project.getCategoryId() != null) {
-            ProjectCategory category = projectCategoryMapper.selectById(project.getCategoryId());
-            vo.setCategoryName(category != null ? category.getName() : null);
-        }
+        fillCategory(userId, project.getId(), vo);
         // 成员按实际角色展示；非成员分享访客展示为只读成员
         ProjectRole role = permissionService.getEffectiveRole(userId, project.getId());
         if (role == ProjectRole.NONE) {
@@ -509,9 +511,6 @@ public class ProjectService {
         checkAdmin(userId, projectId);
         project.setName(request.getName());
         project.setDescription(request.getDescription());
-        if (request.getCategoryId() != null) {
-            project.setCategoryId(resolveCategoryId(userId, request.getCategoryId()));
-        }
         if (request.getType() != null) {
             project.setType(request.getType());
             // 转为私有项目时自动关闭分享，防止旧链接继续访问私有项目
@@ -524,12 +523,18 @@ public class ProjectService {
         }
         project.setModifiedBy(userId);
         projectMapper.updateById(project);
-        // 清除分类：updateById 会忽略 null 字段，需显式 SQL 置空
-        if (request.getCategoryId() != null && project.getCategoryId() == null) {
-            projectMapper.update(null, new LambdaUpdateWrapper<Project>()
-                    .eq(Project::getId, projectId)
-                    .set(Project::getCategoryId, null));
-        }
+        return getProject(userId, projectId);
+    }
+
+    /**
+     * 设置当前用户的项目归类（归类只影响本人侧边栏，因此无需项目 admin）。
+     * categoryId 为 null/0 时清除归类。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ProjectVO assignCategory(Long userId, Long projectId, Long categoryId) {
+        getExistingProject(projectId);
+        permissionService.checkPermission(userId, projectId, ProjectPermission.VIEW_PROJECT);
+        writeAssignment(userId, projectId, resolveCategoryId(userId, categoryId));
         return getProject(userId, projectId);
     }
 
@@ -630,6 +635,52 @@ public class ProjectService {
             throw new BusinessException(ResultCode.NOT_FOUND, "category.notFound");
         }
         return categoryId;
+    }
+
+    /** 填充当前用户视角的项目归类（无归类记录时保持未分类） */
+    private void fillCategory(Long userId, Long projectId, ProjectVO vo) {
+        Long categoryId = findAssignedCategoryId(userId, projectId);
+        if (categoryId == null) {
+            return;
+        }
+        ProjectCategory category = projectCategoryMapper.selectById(categoryId);
+        if (category != null) {
+            vo.setCategoryId(category.getId());
+            vo.setCategoryName(category.getName());
+        }
+    }
+
+    /** 查询用户对项目的归类ID（null 表示未分类） */
+    private Long findAssignedCategoryId(Long userId, Long projectId) {
+        ProjectCategoryAssignment assignment = assignmentMapper.selectOne(
+                new LambdaQueryWrapper<ProjectCategoryAssignment>()
+                        .eq(ProjectCategoryAssignment::getUserId, userId)
+                        .eq(ProjectCategoryAssignment::getProjectId, projectId));
+        return assignment != null ? assignment.getCategoryId() : null;
+    }
+
+    /** 写入/更新用户对项目的归类；categoryId 为 null 时清除归类 */
+    private void writeAssignment(Long userId, Long projectId, Long categoryId) {
+        ProjectCategoryAssignment existing = assignmentMapper.selectOne(
+                new LambdaQueryWrapper<ProjectCategoryAssignment>()
+                        .eq(ProjectCategoryAssignment::getUserId, userId)
+                        .eq(ProjectCategoryAssignment::getProjectId, projectId));
+        if (categoryId == null) {
+            if (existing != null) {
+                assignmentMapper.deleteById(existing.getId());
+            }
+            return;
+        }
+        if (existing == null) {
+            ProjectCategoryAssignment assignment = new ProjectCategoryAssignment();
+            assignment.setUserId(userId);
+            assignment.setProjectId(projectId);
+            assignment.setCategoryId(categoryId);
+            assignmentMapper.insert(assignment);
+        } else {
+            existing.setCategoryId(categoryId);
+            assignmentMapper.updateById(existing);
+        }
     }
 
     /**
@@ -883,6 +934,10 @@ public class ProjectService {
         }
         ProjectMember member = requireMember(projectId, targetUserId);
         projectMemberMapper.deleteById(member.getId());
+        // 清除被移除成员在该项目的个人归类，避免重新加入后残留旧归类
+        assignmentMapper.delete(new LambdaQueryWrapper<ProjectCategoryAssignment>()
+                .eq(ProjectCategoryAssignment::getUserId, targetUserId)
+                .eq(ProjectCategoryAssignment::getProjectId, projectId));
     }
 
     // ---------- 内部工具 ----------

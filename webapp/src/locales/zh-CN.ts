@@ -75,6 +75,8 @@ export default {
     deleteCategory: '删除分类',
     deleteCategoryConfirm: '确定删除分类「{name}」吗？该分类下的项目将归入未分类。',
     uncategorized: '未分类',
+    moveToCategory: '移动到分类',
+    categoryAssigned: '项目分类已更新',
     adminCenter: '管理后台',
     changePassword: '修改密码',
     inviteMember: '邀请加入',

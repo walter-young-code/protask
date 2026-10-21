@@ -45,6 +45,10 @@ export const updateProject = (id: number, data: ProjectRequest) =>
 export const setDefaultView = (id: number, viewId: number | null) =>
   put<ProjectVO>(`/v1/projects/${id}/default-view`, { viewId })
 
+/** 设置我的项目归类（仅影响本人侧边栏，categoryId 为 null 表示未分类） */
+export const assignProjectCategory = (id: number, categoryId: number | null) =>
+  put<ProjectVO>(`/v1/projects/${id}/category`, { categoryId })
+
 /** 删除项目（软删除） */
 export const deleteProject = (id: number) => del<void>(`/v1/projects/${id}`)
 

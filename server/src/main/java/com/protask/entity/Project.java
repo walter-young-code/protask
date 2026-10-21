@@ -39,9 +39,6 @@ public class Project {
     /** 项目图标 */
     private String icon;
 
-    /** 项目分类ID（NULL=未分类） */
-    private Long categoryId;
-
     /** 卡片动态属性定义模板(JSON 数组) */
     private String cardProperties;
 

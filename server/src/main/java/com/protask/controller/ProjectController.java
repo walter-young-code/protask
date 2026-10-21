@@ -6,6 +6,7 @@ import com.protask.dto.CalendarSubscriptionVO;
 import com.protask.dto.CardPropertiesRequest;
 import com.protask.dto.DefaultViewRequest;
 import com.protask.dto.ProjectCopyRequest;
+import com.protask.dto.ProjectCategoryAssignRequest;
 import com.protask.dto.ProjectMemberRequest;
 import com.protask.dto.ProjectMemberVO;
 import com.protask.dto.ProjectRequest;
@@ -136,6 +137,14 @@ public class ProjectController {
                                             @RequestBody DefaultViewRequest request) {
         return Result.ok(projectService.setDefaultView(StpUtil.getLoginIdAsLong(), id,
                 request != null ? request.getViewId() : null));
+    }
+
+    /** 设置当前用户的项目归类（仅影响本人侧边栏，categoryId 为 null/0 表示未分类） */
+    @PutMapping("/{id}/category")
+    public Result<ProjectVO> assignCategory(@PathVariable Long id,
+                                            @RequestBody ProjectCategoryAssignRequest request) {
+        return Result.ok(projectService.assignCategory(StpUtil.getLoginIdAsLong(), id,
+                request != null ? request.getCategoryId() : null));
     }
 
     /** 删除项目（软删除） */

@@ -392,7 +392,7 @@ export interface ProjectRequest {
   description?: string
   type?: 'O' | 'P'
   icon?: string
-  /** 分类ID：创建时 null=未分类；更新时 null=不修改、0=清除、>0=设置 */
+  /** 分类ID：仅创建时生效（null/0=未分类，>0=设置分类）；更新归类请调用 assignProjectCategory */
   categoryId?: number | null
 }
 
