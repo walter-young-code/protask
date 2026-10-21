@@ -35,7 +35,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -71,6 +73,7 @@ class StorageAdminServiceTest {
     private PermissionService permissionService;
 
     private LocalFileStorage publicStorage;
+    private StorageProperties properties;
     private StorageAdminService storageAdminService;
 
     @BeforeEach
@@ -78,8 +81,10 @@ class StorageAdminServiceTest {
         publicStorage = new LocalFileStorage(tempDir.resolve("uploads"));
         StorageRegistry registry = new StorageRegistry(
                 publicStorage, new LocalFileStorage(tempDir.resolve("uploads-attachments")));
-        StorageProperties properties = new StorageProperties();
+        properties = new StorageProperties();
         properties.setOrphanRetentionDays(7);
+        // 生产默认关闭，本类的判定/清理用例需显式打开开关
+        properties.setOrphanCheckEnabled(true);
         storageAdminService = new StorageAdminService(registry, properties, permissionService,
                 uploadImageMapper, attachmentMapper, blockMapper, projectMapper, siteSettingMapper);
     }
@@ -137,17 +142,38 @@ class StorageAdminServiceTest {
     void statsReportsOrphansAndBuckets() throws IOException {
         when(permissionService.isSystemAdmin(ADMIN_ID)).thenReturn(true);
         when(attachmentMapper.selectCount(any())).thenReturn(3L);
+        when(uploadImageMapper.selectCount(any())).thenReturn(3L);
         stubCandidateImages();
         stubReferences();
 
         StorageStatsVO stats = storageAdminService.stats(ADMIN_ID);
 
+        assertTrue(stats.isOrphanCheckEnabled());
         assertEquals(1, stats.getOrphanImages());
         assertEquals(3, stats.getUploadImageRecords());
         assertEquals(3, stats.getAttachmentRecords());
         assertEquals(3, stats.getPublicImages().getFileCount());
         assertEquals(7, stats.getOrphanRetentionDays());
         assertFalse(stats.isWarning());
+    }
+
+    @Test
+    void orphanCheckDisabledSkipsScanAndRejectsCleanup() throws IOException {
+        properties.setOrphanCheckEnabled(false);
+        when(permissionService.isSystemAdmin(ADMIN_ID)).thenReturn(true);
+        when(attachmentMapper.selectCount(any())).thenReturn(0L);
+        when(uploadImageMapper.selectCount(any())).thenReturn(3L);
+
+        StorageStatsVO stats = storageAdminService.stats(ADMIN_ID);
+
+        assertFalse(stats.isOrphanCheckEnabled(), "开关状态需下发给前端，用于隐藏清理入口");
+        assertEquals(0, stats.getOrphanImages(), "关闭后不做孤儿判定");
+        assertEquals(0, stats.getOrphanImageBytes());
+        assertEquals(3, stats.getUploadImageRecords(), "记录数走 COUNT，不加载全表");
+        // 关闭后不应再全表扫描引用文本，也不应逐张查对象大小
+        verifyNoInteractions(blockMapper, projectMapper, siteSettingMapper);
+        verify(uploadImageMapper, never()).selectList(any());
+        assertThrows(BusinessException.class, () -> storageAdminService.cleanupOrphans(ADMIN_ID));
     }
 
     @Test

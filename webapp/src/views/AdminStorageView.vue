@@ -88,7 +88,10 @@ onMounted(loadStats)
         {{ t('adminStorage.refresh') }}
       </el-button>
     </div>
-    <p class="page-desc">{{ t('adminStorage.desc') }}</p>
+    <!-- 孤儿检测未启用时（默认）不宣称有清理能力 -->
+    <p class="page-desc">
+      {{ t(stats?.orphanCheckEnabled ? 'adminStorage.desc' : 'adminStorage.descUsageOnly') }}
+    </p>
 
     <el-alert
       v-if="stats?.warning"
@@ -142,7 +145,8 @@ onMounted(loadStats)
       </el-card>
     </div>
 
-    <el-card v-if="stats" shadow="never" class="orphan-card">
+    <!-- 孤儿图片检测默认关闭（PROTASK_STORAGE_ORPHAN_CHECK），关闭时不展示统计与清理入口 -->
+    <el-card v-if="stats && stats.orphanCheckEnabled" shadow="never" class="orphan-card">
       <div class="orphan-head">
         <div>
           <h3>{{ t('adminStorage.orphanTitle') }}</h3>

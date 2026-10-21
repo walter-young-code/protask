@@ -20,11 +20,14 @@ public class StorageStatsVO {
     /** upload_image 表记录数 */
     private long uploadImageRecords;
 
-    /** 无引用且超过保留期的孤儿图片数 */
+    /** 无引用且超过保留期的孤儿图片数（未启用检测时恒为 0） */
     private long orphanImages;
 
-    /** 孤儿图片占用字节数 */
+    /** 孤儿图片占用字节数（未启用检测时恒为 0） */
     private long orphanImageBytes;
+
+    /** 是否启用孤儿图片检测与清理（protask.storage.orphan-check-enabled） */
+    private boolean orphanCheckEnabled;
 
     /** 孤儿图片保留天数 */
     private int orphanRetentionDays;

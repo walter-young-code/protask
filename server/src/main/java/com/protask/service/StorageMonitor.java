@@ -12,7 +12,8 @@ import java.io.IOException;
 
 /**
  * 存储巡检：定时统计两个存储桶的文件数与占用，超阈值输出 WARN。
- * 仅做观测告警，不自动删除任何文件；孤儿图片清理由管理后台手动触发。
+ * 仅做观测告警，不自动删除任何文件；孤儿图片统计与清理默认关闭，
+ * 需显式设置 protask.storage.orphan-check-enabled=true（PROTASK_STORAGE_ORPHAN_CHECK）。
  */
 @Slf4j
 @Component

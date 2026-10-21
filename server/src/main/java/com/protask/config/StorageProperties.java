@@ -20,4 +20,12 @@ public class StorageProperties {
 
     /** 孤儿图片保留天数：上传未满该天数的图片即使暂无引用也不清理 */
     private int orphanRetentionDays = 7;
+
+    /**
+     * 是否启用孤儿图片检测与清理。默认关闭：
+     * 判定口径需要全表扫描 block/project/site_setting 文本并逐张向存储层取大小
+     * （OSS 模式下为每张图一次 HeadObject），代价随数据量线性增长，
+     * 且清理动作不可逆，交由运维按需临时开启。
+     */
+    private boolean orphanCheckEnabled = false;
 }

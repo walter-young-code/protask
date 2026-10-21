@@ -33,19 +33,36 @@ services:
       mysql:
         condition: service_healthy
     environment:
-      # 容器内通过服务名访问 MySQL；密钥必须由 .env 显式注入，禁止使用仓库中的示例默认值
-      PROTASK_DB_URL: jdbc:mysql://mysql:3306/protask?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false
-      PROTASK_DB_USER: root
-      PROTASK_DB_PASSWORD: ${PROTASK_DB_ROOT_PASSWORD:?PROTASK_DB_ROOT_PASSWORD 必须在 .env 中设置}
+      # 数据库连接三项均可由 .env 覆盖：默认走 compose 内的 mysql 服务，
+      # 宿主机 MySQL 场景把 PROTASK_DB_URL 的主机改成 host.docker.internal（见下方 extra_hosts）
+      PROTASK_DB_URL: ${PROTASK_DB_URL:-jdbc:mysql://mysql:3306/protask?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false}
+      PROTASK_DB_USER: ${PROTASK_DB_USER:-root}
+      # 密钥与数据库密码必须由 .env 显式注入，禁止使用仓库中的示例默认值
+      PROTASK_DB_PASSWORD: ${PROTASK_DB_PASSWORD:?PROTASK_DB_PASSWORD 必须在 .env 中设置（容器 MySQL 场景填成与 PROTASK_DB_ROOT_PASSWORD 相同的值）}
       PROTASK_JWT_SECRET: ${PROTASK_JWT_SECRET:?PROTASK_JWT_SECRET 必须在 .env 中设置（可用 openssl rand -base64 48 生成）}
-      # 请求均经 webapp(nginx) 反向代理，信任其追加的真实客户端 IP
+      # 存储后端与 OSS 参数：backend=oss 时 endpoint/凭证/桶名必填，缺失会在启动阶段直接报错
+      PROTASK_STORAGE_BACKEND: ${PROTASK_STORAGE_BACKEND:-local}
+      PROTASK_OSS_ENDPOINT: ${PROTASK_OSS_ENDPOINT:-}
+      PROTASK_OSS_ACCESS_KEY_ID: ${PROTASK_OSS_ACCESS_KEY_ID:-}
+      PROTASK_OSS_ACCESS_KEY_SECRET: ${PROTASK_OSS_ACCESS_KEY_SECRET:-}
+      PROTASK_OSS_PUBLIC_BUCKET: ${PROTASK_OSS_PUBLIC_BUCKET:-}
+      PROTASK_OSS_PRIVATE_BUCKET: ${PROTASK_OSS_PRIVATE_BUCKET:-}
+      PROTASK_OSS_PUBLIC_PREFIX: ${PROTASK_OSS_PUBLIC_PREFIX:-uploads/}
+      PROTASK_OSS_PRIVATE_PREFIX: ${PROTASK_OSS_PRIVATE_PREFIX:-attachments/}
+      # 孤儿图片检测与清理：默认关闭（判定需全表扫描文本 + 逐张查询对象大小，且清理不可逆）
+      PROTASK_STORAGE_ORPHAN_CHECK: ${PROTASK_STORAGE_ORPHAN_CHECK:-false}
+      # 请求均经 webapp(nginx) 或宿主机 nginx 反向代理，信任其追加的真实客户端 IP
       PROTASK_RATE_LIMIT_TRUST_PROXY: "true"
       TZ: UTC
     ports:
-      - "8000:8000"
+      # 仅供宿主机 nginx 反代；不对外暴露 8000，避免绕过代理直打后端（伪造 X-Forwarded-For 绕过登录限流）
+      - "127.0.0.1:8000:8000"
     volumes:
       - protask-uploads:/app/uploads
       - protask-attachments:/app/uploads-attachments
+    extra_hosts:
+      # 宿主机 MySQL 场景：容器内用 host.docker.internal 访问宿主机 127.0.0.1:3306
+      - "host.docker.internal:host-gateway"
 
   webapp:
     build: ./webapp

@@ -25,7 +25,6 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -59,9 +58,12 @@ public class StorageAdminService {
         return buildStats();
     }
 
-    /** 清理无引用且超过保留期的孤儿图片（仅系统管理员） */
+    /** 清理无引用且超过保留期的孤儿图片（仅系统管理员，需显式启用孤儿检测） */
     public StorageCleanupVO cleanupOrphans(Long operatorId) {
         requireAdmin(operatorId);
+        if (!storageProperties.isOrphanCheckEnabled()) {
+            throw new BusinessException(ResultCode.FORBIDDEN, "storage.orphanCheckDisabled");
+        }
         Set<String> referenced = collectReferencedImageNames();
         LocalDateTime cutoff = orphanCutoff();
         StorageCleanupVO result = new StorageCleanupVO();
@@ -99,27 +101,31 @@ public class StorageAdminService {
         vo.setPrivateAttachments(buildBucket(storageRegistry.privateAttachments()));
         vo.setAttachmentRecords(attachmentMapper.selectCount(null));
 
-        List<UploadImage> images = uploadImageMapper.selectList(null);
-        vo.setUploadImageRecords(images.size());
-        Set<String> referenced = collectReferencedImageNames();
-        LocalDateTime cutoff = orphanCutoff();
-        long orphanCount = 0;
-        long orphanBytes = 0;
-        for (UploadImage image : images) {
-            if (!isOrphan(image, referenced, cutoff)) {
-                continue;
-            }
-            orphanCount++;
-            long size = storageRegistry.publicImages().size(image.getStoredName());
-            if (size > 0) {
-                orphanBytes += size;
-            }
-        }
-        vo.setOrphanImages(orphanCount);
-        vo.setOrphanImageBytes(orphanBytes);
+        vo.setUploadImageRecords(uploadImageMapper.selectCount(null));
+        vo.setOrphanCheckEnabled(storageProperties.isOrphanCheckEnabled());
         vo.setOrphanRetentionDays(storageProperties.getOrphanRetentionDays());
         vo.setWarnFileCount(storageProperties.getWarnFileCount());
         vo.setWarnTotalBytes(storageProperties.getWarnTotalBytes());
+        // 默认不做孤儿检测：引用汇总要全表扫描块/项目/站点文本，且每张孤儿图一次存储层
+        // 大小查询（OSS 为 HeadObject），数据量上来后管理后台打开一次的成本不可忽视
+        if (storageProperties.isOrphanCheckEnabled()) {
+            Set<String> referenced = collectReferencedImageNames();
+            LocalDateTime cutoff = orphanCutoff();
+            long orphanCount = 0;
+            long orphanBytes = 0;
+            for (UploadImage image : uploadImageMapper.selectList(null)) {
+                if (!isOrphan(image, referenced, cutoff)) {
+                    continue;
+                }
+                orphanCount++;
+                long size = storageRegistry.publicImages().size(image.getStoredName());
+                if (size > 0) {
+                    orphanBytes += size;
+                }
+            }
+            vo.setOrphanImages(orphanCount);
+            vo.setOrphanImageBytes(orphanBytes);
+        }
 
         long totalFiles = vo.getPublicImages().getFileCount() + vo.getPrivateAttachments().getFileCount();
         long totalBytes = vo.getPublicImages().getTotalBytes() + vo.getPrivateAttachments().getTotalBytes();

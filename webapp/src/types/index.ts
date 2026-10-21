@@ -233,9 +233,11 @@ export interface StorageStatsVO {
   privateAttachments: StorageBucketVO
   attachmentRecords: number
   uploadImageRecords: number
-  /** 无引用且超过保留期的孤儿图片数 */
+  /** 无引用且超过保留期的孤儿图片数（未启用检测时恒为 0） */
   orphanImages: number
   orphanImageBytes: number
+  /** 是否启用孤儿图片检测与清理，关闭时隐藏清理卡片 */
+  orphanCheckEnabled: boolean
   /** 孤儿图片保留天数 */
   orphanRetentionDays: number
   warnFileCount: number

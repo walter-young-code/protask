@@ -28,6 +28,10 @@ public class SaTokenConfig implements WebMvcConfigurer {
     @Value("${protask.upload-dir:uploads}")
     private String uploadDir;
 
+    /** 存储后端：local 走本地磁盘静态映射，oss 由 PublicImageController 提供同名接口 */
+    @Value("${protask.storage.backend:local}")
+    private String storageBackend;
+
     /**
      * 启用 JWT 模式（Simple 模式：token 为 JWT，会话数据仍保存在服务端）。
      */
@@ -60,9 +64,13 @@ public class SaTokenConfig implements WebMvcConfigurer {
         registry.addInterceptor(disabledUserInterceptor).addPathPatterns("/api/**");
     }
 
-    /** 上传图片的静态映射：/api/v1/upload/files/** -> 本地上传目录 */
+    /** 上传图片的静态映射：/api/v1/upload/files/** -> 本地上传目录（仅 local 后端） */
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
+        if (!"local".equalsIgnoreCase(storageBackend)) {
+            // OSS 模式下磁盘上不存在这些文件，改由 PublicImageController 从对象存储流式返回
+            return;
+        }
         String absolute = Paths.get(uploadDir).toAbsolutePath().normalize().toString();
         registry.addResourceHandler("/api/v1/upload/files/**")
                 .addResourceLocations("file:" + absolute + "/");

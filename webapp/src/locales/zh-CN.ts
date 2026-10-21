@@ -581,6 +581,8 @@ export default {
   adminStorage: {
     title: '存储管理',
     desc: '展示公开图片与私有附件的磁盘占用，并支持清理无引用的历史图片。',
+    // 孤儿图片检测默认关闭（PROTASK_STORAGE_ORPHAN_CHECK=false）时不再承诺清理入口
+    descUsageOnly: '展示公开图片与私有附件的磁盘占用。',
     publicImages: '公开图片',
     publicImagesHint: 'Markdown 插图与图片附件（公开访问）',
     privateAttachments: '私有附件',

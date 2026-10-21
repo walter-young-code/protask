@@ -79,16 +79,23 @@ ProTask/
 
 ## 环境要求
 
-- JDK 17+
+- JDK 17（建议；`server/Dockerfile` 的构建镜像即 temurin-17）
 - Maven 3.9+
 - Node.js 20.19+
 - Docker（用于运行 MySQL）
 
+> JDK 23 及以上本机直跑需额外参数：javac 从 23 起默认不再运行注解处理器，Lombok 不生效会报一堆
+> “找不到符号 getXxx()”。此时用 `mvn -Dmaven.compiler.proc=full -Dlombok.version=1.18.44 ...` 编译，
+> 或直接用 JDK 17 / Docker 构建。Mockito 的 inline mock 也需要匹配 JDK 的 Byte Buddy 版本，
+> 高版本 JDK 下部分既有单测会直接报错，与业务代码无关。
+
 ## 快速开始
 
-> 先复制根目录 `.env.example` 为 `.env`，并填写数据库密码与 JWT 密钥：
-> `PROTASK_DB_ROOT_PASSWORD` 和 `PROTASK_JWT_SECRET`（可用 `openssl rand -base64 48` 生成）。
-> 两者均为必填，未配置时 `docker compose` 会直接报错。
+> 先复制根目录 `.env.example` 为 `.env`，并填写必填项：
+> `PROTASK_DB_ROOT_PASSWORD`（容器 MySQL 的 root 密码）、`PROTASK_DB_PASSWORD`（后端连接用的数据库密码，
+> 容器场景填成与前者相同的值；宿主机 MySQL 场景填独立业务账号密码）、
+> `PROTASK_JWT_SECRET`（可用 `openssl rand -base64 48` 生成）。
+> 未配置时 `docker compose` 会直接报错。文件存储默认本地磁盘，接阿里云 OSS 见「存储与上传配置」。
 
 ### 1. 启动 MySQL
 
@@ -129,6 +136,124 @@ docker compose up -d
 
 将依次构建并启动 MySQL、Server（8000）、Webapp（3000 nginx）三个服务。MCP 服务在 `tools` profile 下，默认不启动。
 
+### 5. 生产部署（宿主机 nginx + 宿主机 MySQL + 阿里云 OSS）
+
+服务器上 nginx 与 MySQL 已直接运行在宿主机、80/443 已被其他站点占用时，按二级域名部署，
+只需要跑后端，`mysql` 与 `webapp` 两个服务都不启用。
+
+后端（二选一）：
+
+```bash
+# 方式 A：宿主机直跑 jar（推荐，日志走 journald）
+java -jar server/target/protask-server.jar
+
+# 方式 B：仅起 server 容器，数据库连宿主机 MySQL
+docker compose up -d --no-deps server   # .env 中覆盖 PROTASK_DB_URL / PROTASK_DB_USER / PROTASK_DB_PASSWORD
+```
+
+`.env` 的加载方式按运行方式不同，别踩坑：
+
+| 运行方式 | 是否自动读 `.env` | 说明 |
+| --- | --- | --- |
+| `docker compose up` | 自动 | compose 读同目录 `.env` 做变量替换，`server` 服务已显式列出需要透传的键 |
+| systemd（`deploy/protask.service`） | 自动 | 由 `EnvironmentFile=/etc/protask/.env` 注入；密码含 `$` 只能用 EnvironmentFile，`Environment=` 里要写成 `$$` |
+| `java -jar` / `mvn spring-boot:run` 直跑 | 不读 | Spring Boot 不解析 `.env`，需 `set -a; . ./.env; set +a` 或 IDE 的 EnvFile 插件 |
+
+宿主机 MySQL 的三个必查项：
+
+| 项 | 要求 |
+| --- | --- |
+| 建库 | `CREATE DATABASE pro_task DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci`（库名须与 `PROTASK_DB_URL` 中的库名一致） |
+| 账号 | 单独业务账号并只授权该库，不用 root；对应 `PROTASK_DB_USER` / `PROTASK_DB_PASSWORD`，且需建库/DDL 权限（Flyway 建表与迁移） |
+| 时区 | 表结构里大量 `DATETIME DEFAULT CURRENT_TIMESTAMP` 由数据库时区决定。容器版靠 `--default-time-zone=+00:00` 保证，宿主机须给 JDBC URL 追加 `&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true`（仅影响本连接），否则时间戳会比应用口径快 8 小时 |
+
+宿主机 nginx 新增子站（复用 `webapp/nginx.conf` 的 location 规则，两处不同：`proxy_pass` 指向
+`http://127.0.0.1:8000`，`client_max_body_size` 要与后端 `PROTASK_MAX_REQUEST_SIZE`（默认 50MB）对齐，
+默认 10m 会把大文件上传拦成 413）：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name protask.yourdomain.com;
+    ssl_certificate     /etc/letsencrypt/live/protask.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/protask.yourdomain.com/privkey.pem;
+
+    root /var/www/protask/dist;          # cd webapp && npm run build 的产物
+    index index.html;
+    location / { try_files $uri $uri/ /index.html; }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        client_max_body_size 51m;
+    }
+}
+server { listen 80; server_name protask.yourdomain.com; return 301 https://$host$request_uri; }
+```
+
+因为请求必经这层可信代理，`PROTASK_RATE_LIMIT_TRUST_PROXY` 保持 `true`（登录限流按真实客户端 IP 计数）；
+同时后端 8000 只绑定 `127.0.0.1`，不要开放到公网。前端与 API 同源，后端无需 CORS 配置。
+
+仓库 `deploy/` 下备好了这套拓扑要用的文件：
+
+| 文件 | 用途 |
+| --- | --- |
+| `deploy/nginx-protask.conf` | 子站 server block（含 HTTP-01 放行、Vite 资源长缓存、`client_max_body_size`），换域名后可直接放 `/etc/nginx/conf.d/` |
+| `deploy/nginx-task.cnood.net.conf` | 同一份配置的宝塔（BT Panel）落地版：vhost 目录、日志路径与复用 `*.cnood.net` 泛域名证书，已在测试服务器实跑 |
+| `deploy/protask.service` | 后端 systemd 单元：`EnvironmentFile` 注入环境变量（密码含 `$` 时唯一安全写法）、只绑定 127.0.0.1、`--logging.level.com.protask=info` 关掉逐条 SQL 日志、基础加固 |
+| `deploy/oss-ram-policy.json` | OSS RAM 子账号最小权限策略，只放开 `protask/uploads/` 与 `protask/attachments/` 两个前缀 |
+
+环境变量本身不入库：复制 `.env.example` 为 `.env` 填值，服务器上放 `/etc/protask/.env` 并 `chmod 600`。
+共用桶时注意 OSS 的读写权限（ACL）是桶级的，无法只把某个前缀设为私有——
+私有附件必须落在权限为「私有」的桶里。测试环境暂用单个公有读桶 `cat666cn` + 两个前缀
+（`protask/uploads/`、`protask/attachments/`）跑通，上线前把 `PROTASK_OSS_PRIVATE_BUCKET` 换成私有桶即可，前缀不用改。
+
+### 6. 测试服务器现状（101.133.132.240 / Ubuntu 24.04 / 宝塔面板）
+
+已按上述拓扑部署，实测通过。落位如下：
+
+| 位置 | 内容 |
+| --- | --- |
+| `/opt/protask/protask-server.jar` | 后端可执行 jar，属主 `protask`（`useradd -r -s /usr/sbin/nologin` 专用账号） |
+| `/etc/protask/.env` | 真实环境变量，`640 root:protask`；含宿主机 MySQL、OSS、管理员初始密码 |
+| `/etc/systemd/system/protask.service` | `enable --now`，只监听 `127.0.0.1:8000`，`Restart=always` |
+| `/var/www/protask/dist` | 前端产物，属主 `www:www`，目录 755 / 文件 644 |
+| `/www/server/panel/vhost/nginx/task.cnood.net.conf` | 子站配置（宝塔 vhost 目录由 `nginx.conf` 第 96 行 `include *.conf` 加载） |
+| `/www/wwwlogs/task.cnood.net.log` | 站点访问日志，沿用面板约定 |
+
+未触碰的既有东西：`cnood.net`、`bt.cnood.net`、`phpmyadmin`、`101.133.132.240` 各站点配置，MySQL 里其它库，
+nacos/xxl-job/mongo/redis 等进程，80/443/888 与 ufw 规则（80、443 本就放行）。`nginx -s reload` 是唯一的整体动作。
+
+已实测通过：Flyway V1–V19 建表、管理员登录、Markdown 插图上传落 OSS 并以 `/api/v1/upload/files/**` 同源返回、
+私有附件鉴权下载（匿名请求返回 401）、`/api/v1/admin/storage` 两桶统计、孤儿检测关闭时清理接口返回 403。
+
+重新部署（服务器侧已就绪，只差传产物）：
+
+```bash
+# 本地构建（Windows：JDK 23+ 需附带这些参数，否则 Lombok 注解处理器不生效）
+mvn -f server/pom.xml -DskipTests -Dmaven.compiler.proc=full -Dlombok.version=1.18.44 package
+cd webapp && npm run build && tar -czf ../testtmp/protask-dist.tar.gz dist && cd ..
+
+# 上传并重启（jar 变更）
+scp server/target/protask-server.jar root@101.133.132.240:/opt/protask/
+ssh root@101.133.132.240 'chown protask:protask /opt/protask/protask-server.jar && systemctl restart protask'
+
+# 前端变更
+scp testtmp/protask-dist.tar.gz root@101.133.132.240:/tmp/
+ssh root@101.133.132.240 'rm -rf /var/www/protask/dist && tar -xzf /tmp/protask-dist.tar.gz -C /var/www/protask && rm -f /tmp/protask-dist.tar.gz && chown -R www:www /var/www/protask'
+
+# 日志与状态
+ssh root@101.133.132.240 'journalctl -u protask -n 50 --no-pager'
+```
+
+唯一待办：`task.cnood.net` 目前没有 A 记录（`cnood.net`、`www.cnood.net` 已指向本机）。加记录前可用
+`curl -sk --resolve task.cnood.net:443:127.0.0.1 https://task.cnood.net/api/v1/site/settings` 在服务器上验证，
+加完后浏览器即可直接访问，证书用的 `*.cnood.net` 泛域名（2026-11-20 到期，面板续签后本子站自动跟随）。
+
 ## 常用命令
 
 | 命令 | 说明 |
@@ -148,7 +273,7 @@ docker compose up -d
 
 | 目录 | 配置项 | 内容 | 访问方式 |
 | --- | --- | --- | --- |
-| `uploads/{projectId}/{taskId}/` | `protask.upload-dir`（默认 `uploads`） | Markdown 插图、图片附件 | 公开静态 `/api/v1/upload/files/**` |
+| `uploads/`（插图扁平存放）与 `uploads/{projectId}/{taskId}/`（图片附件） | `protask.upload-dir`（默认 `uploads`） | Markdown 插图、图片附件 | 公开静态 `/api/v1/upload/files/**` |
 | `uploads-attachments/{projectId}/{taskId}/` | `protask.attachment-dir`（默认 `uploads-attachments`） | 文档/压缩包等附件 | 鉴权下载接口 |
 
 相关配置项（`server/src/main/resources/application.yml`）：
@@ -162,10 +287,18 @@ docker compose up -d
 | `protask.attachment.max-per-user-per-day` | `0` | 单用户每日上传附件数上限（`<=0` 不限制） |
 | `protask.storage.warn-file-count` | `50000` | 两目录合计文件数告警阈值 |
 | `protask.storage.warn-total-bytes` | `5368709120` | 两目录合计占用告警阈值（5GB） |
-| `protask.storage.orphan-retention-days` | `7` | 孤儿图片保留天数（管理后台手动清理） |
+| `protask.storage.orphan-retention-days` | `7` | 孤儿图片保留天数（仅在启用孤儿检测时生效，无独立环境变量） |
+| `PROTASK_STORAGE_ORPHAN_CHECK` | `false` | 孤儿图片检测与清理开关。默认关闭：判定需全表扫描块/项目/站点文本，并逐张向存储层取大小（OSS 为 HeadObject），且清理不可逆。关闭时后台不展示该卡片，接口也会直接拒绝；需回收无引用插图时临时开启 |
 | `PROTASK_STORAGE_CHECK_CRON` | `0 0 3 * * *` | 存储巡检 cron，超阈值输出 WARN 日志 |
+| `PROTASK_STORAGE_BACKEND` | `local` | 存储后端：`local` 本地磁盘，`oss` 阿里云 OSS |
+| `PROTASK_OSS_ENDPOINT` | — | OSS 接入点，同地域 ECS 建议用 `-internal` 内网域名 |
+| `PROTASK_OSS_ACCESS_KEY_ID` / `_SECRET` | — | RAM 子账号凭证，仅授权下列两个桶 |
+| `PROTASK_OSS_PUBLIC_BUCKET` / `_PRIVATE_BUCKET` | — | 公开图片桶 / 私有附件桶（附件桶须为私有读写） |
+| `PROTASK_OSS_PUBLIC_PREFIX` / `_PRIVATE_PREFIX` | `uploads/` / `attachments/` | 对象 key 前缀；库内存的是前缀之后的相对路径，上线后不可更改 |
 
-存储抽象为 `FileStorage` 接口（`server/src/main/java/com/protask/storage/`），当前为本地磁盘实现；接入 MinIO/S3/OSS 时替换 `FileStorageConfig` 中的实现即可。管理后台「存储管理」页可查看两个目录的用量并清理无引用的 Markdown 插图。
+存储抽象为 `FileStorage` 接口（`server/src/main/java/com/protask/storage/`），已有本地磁盘（`LocalFileStorage`）与阿里云 OSS（`OssFileStorage`）两个实现，`FileStorageConfig` 按 `protask.storage.backend` 条件装配，业务层（上传、鉴权下载、孤儿清理、巡检统计）只依赖 `StorageRegistry`，切换后端无需改代码或迁移库内数据。
+
+OSS 模式下公开图片仍走 `/api/v1/upload/files/{filename}` 同源返回（`PublicImageController` 从对象存储流式读取，带 `ETag` 与一年强缓存），文件名严格限定为本系统上传的 UUID + 图片扩展名，因此该免登录接口读不到私有附件。附件下载继续走鉴权接口，不产生公开直链。若后续要省带宽，可把公开图片桶设为公共读并把该接口改成 302 跳转 OSS/CDN 直链，但库内 Markdown 已存的相对路径 URL 需保持可用。管理后台「存储管理」页可查看两个桶的用量并清理无引用的 Markdown 插图（OSS 模式按对象前缀分页统计）。
 
 ## API 概览
 
@@ -260,7 +393,7 @@ docker compose up -d
 | POST | /api/v1/admin/projects/{id}/restore | 恢复归档项目 |
 | DELETE | /api/v1/admin/projects/{id} | 删除归档项目 |
 | GET | /api/v1/admin/storage | 存储用量与孤儿图片统计 |
-| DELETE | /api/v1/admin/storage/orphans | 清理孤儿图片 |
+| DELETE | /api/v1/admin/storage/orphans | 清理孤儿图片（默认关闭，需 `PROTASK_STORAGE_ORPHAN_CHECK=true`，否则返回 403） |
 | DELETE | /api/v1/admin/projects/deleted | 物理清理已删项目 |
 | GET/PUT | /api/v1/site/settings | 站点公开设置 / 更新站点设置 |
 

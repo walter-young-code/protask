@@ -46,8 +46,10 @@ protask:
     max-per-task: 20
     max-per-project: 0
     max-per-user-per-day: 0
-  # 存储巡检：定时统计两个存储目录并超阈值告警；孤儿图片清理由管理后台手动触发
+  # 存储巡检：定时统计两个存储目录并超阈值告警；孤儿图片检测与清理默认关闭，仅开关打开后可手动触发
   storage:
+    # 存储后端：local=本地磁盘（开发默认），oss=阿里云 OSS（生产）
+    backend: ${PROTASK_STORAGE_BACKEND:local}
     # 巡检 cron（默认每天 03:00）
     check-cron: "${PROTASK_STORAGE_CHECK_CRON:0 0 3 * * *}"
     # 文件数告警阈值（两桶合计）
@@ -56,6 +58,21 @@ protask:
     warn-total-bytes: 5368709120
     # 无引用图片保留天数（上传未满该天数的图片不清理）
     orphan-retention-days: 7
+    # 孤儿图片检测与清理：默认关闭。判定需全表扫描文本字段并逐张查询对象大小
+    # （OSS 模式下每张一次 HeadObject），且清理不可逆，需要时经环境变量临时开启
+    orphan-check-enabled: ${PROTASK_STORAGE_ORPHAN_CHECK:false}
+    # 阿里云 OSS（backend=oss 时必填项由 FileStorageConfig 启动校验，缺失即启动失败）
+    oss:
+      # 同地域 ECS 用内网域名 oss-cn-xxx-internal.aliyuncs.com，不产生公网流量费
+      endpoint: ${PROTASK_OSS_ENDPOINT:}
+      # 建议使用仅授权这两个桶的 RAM 子账号 AK
+      access-key-id: ${PROTASK_OSS_ACCESS_KEY_ID:}
+      access-key-secret: ${PROTASK_OSS_ACCESS_KEY_SECRET:}
+      public-bucket: ${PROTASK_OSS_PUBLIC_BUCKET:}
+      private-bucket: ${PROTASK_OSS_PRIVATE_BUCKET:}
+      # 对象 key 前缀：DB 存的 stored_name 是前缀之后的相对路径，上线后不要更改
+      public-prefix: ${PROTASK_OSS_PUBLIC_PREFIX:uploads/}
+      private-prefix: ${PROTASK_OSS_PRIVATE_PREFIX:attachments/}
   auth:
     # 认证接口限流：单 IP 每分钟最大次数，<=0 关闭限流
     rate-limit:

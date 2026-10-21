@@ -594,6 +594,8 @@ export default {
   adminStorage: {
     title: 'Storage',
     desc: 'Shows disk usage of public images and private attachments, and cleans up unreferenced legacy images.',
+    // Used when orphan image detection is disabled (PROTASK_STORAGE_ORPHAN_CHECK=false, the default)
+    descUsageOnly: 'Shows disk usage of public images and private attachments.',
     publicImages: 'Public Images',
     publicImagesHint: 'Markdown images and image attachments (public)',
     privateAttachments: 'Private Attachments',

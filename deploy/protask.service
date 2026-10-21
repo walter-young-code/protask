@@ -1,0 +1,55 @@
+# ProTask 后端 systemd 单元：放到 /etc/systemd/system/protask.service
+#
+# 准备：
+#   useradd -r -m -d /opt/protask -s /usr/sbin/nologin protask
+#   mkdir -p /etc/protask && cp .env /etc/protask/.env && chmod 600 /etc/protask/.env && chown root:root /etc/protask/.env
+#   cp server/target/protask-server.jar /opt/protask/ && chown -R protask:protask /opt/protask
+# 启动：
+#   systemctl daemon-reload && systemctl enable --now protask
+#   journalctl -u protask -f        # 首次启动会在这里打印一次随机管理员密码
+#
+# 说明：构建请用 JDK 17（server/Dockerfile 用的 temurin-17）。
+# 若服务器只有 JDK 23+，mvn 需加 -Dmaven.compiler.proc=full 且提升 Lombok 版本，
+# 否则注解处理器不运行会成片报「找不到符号 getXxx()」。
+
+[Unit]
+Description=ProTask 后端服务
+Documentation=https://github.com/your-org/pro-task
+After=network-online.target mysqld.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=protask
+Group=protask
+WorkingDirectory=/opt/protask
+
+# 关键：密码里有 $，必须走 EnvironmentFile。
+# systemd 对 EnvironmentFile 按字面解析（不做变量展开）；
+# 若改写成 Environment=PROTASK_DB_PASSWORD=xxx，其中的 $ 必须转义为 $$，否则值会被截断；
+# 同理在 bash 里手动 export 时要用单引号。
+EnvironmentFile=/etc/protask/.env
+Environment=TZ=UTC
+
+# 只绑定回环地址：对外由 nginx 反代，8000 不暴露公网，
+# 避免绕过代理直连后端（也让 PROTASK_RATE_LIMIT_TRUST_PROXY=true 的限流不被伪造 XFF 绕过）
+# logging.level.com.protask=info：仓库内 application.yml 默认 debug（本地开发要看 SQL），
+# 服务器上逐条 SQL 会把 journald 灌满，这里用启动参数覆盖回 info
+ExecStart=/usr/bin/java -Xms256m -Xmx768m -XX:MaxRAMPercentage=70 \
+    -jar /opt/protask/protask-server.jar --server.address=127.0.0.1 --server.port=8000 \
+    --logging.level.com.protask=info
+
+Restart=always
+RestartSec=5
+SuccessExitStatus=143 15
+TimeoutStopSec=30
+
+# 基础加固；backend=local 时上传目录需要可写，故这里放开 /opt/protask
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/protask
+
+[Install]
+WantedBy=multi-user.target

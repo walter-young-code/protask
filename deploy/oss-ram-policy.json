@@ -1,0 +1,38 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "oss:GetObject",
+        "oss:PutObject",
+        "oss:DeleteObject"
+      ],
+      "Resource": [
+        "acs:oss:*:*:cat666cn/protask/uploads/*",
+        "acs:oss:*:*:cat666cn/protask/attachments/*"
+      ],
+      "_comment": "Get 覆盖 doesObjectExist(HeadObject) 与 getObjectMetadata；Put 覆盖上传；Delete 覆盖删除与孤儿清理"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "oss:ListObjects"
+      ],
+      "Resource": [
+        "acs:oss:*:*:cat666cn"
+      ],
+      "Condition": {
+        "StringLike": {
+          "oss:Prefix": [
+            "protask/uploads/*",
+            "protask/attachments/*"
+          ]
+        }
+      },
+      "_comment2": "存储巡检 stats() 用 ListObjectsV2 按前缀分页统计；限定前缀后该子账号看不到桶内其它业务对象"
+    }
+  ],
+  "_usage": "在 RAM 控制台新建自定义权限策略并粘贴本 JSON，只授权给专用 RAM 子账号；不要用主账号 AccessKey，也不要把策略授给已在别处使用的旧 AK（那会绕过前缀隔离）。",
+  "_acl_warning": "cat666cn 当前为「公有读」，只适合放公开图片（protask/uploads/）。OSS 的读写权限是桶级的，无法单独把 protask/attachments/ 前缀设为私有，因此非图片附件必须改放一个「私有」桶——把 PROTASK_OSS_PRIVATE_BUCKET 指向新建的私有桶，并把本策略的 Resource 同步加上该桶的 attachments/* 前缀。"
+}
