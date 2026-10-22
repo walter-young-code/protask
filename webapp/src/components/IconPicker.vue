@@ -223,23 +223,6 @@ function handleRemove() {
   overflow-x: auto;
 }
 
-.icon-category-nav::-webkit-scrollbar {
-  height: 6px;
-}
-
-.icon-category-nav::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.icon-category-nav::-webkit-scrollbar-thumb {
-  background: var(--app-border);
-  border-radius: 3px;
-}
-
-.icon-category-nav::-webkit-scrollbar-thumb:hover {
-  background: var(--app-text-placeholder);
-}
-
 .icon-category-tab {
   display: inline-flex;
   align-items: center;

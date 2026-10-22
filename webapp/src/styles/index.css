@@ -23,6 +23,12 @@
   --app-border-lighter: #f2f6fc;
   --app-header-bg: #1d3a8f;
   --app-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
+  /* 滚动条弱化：透明轨道 + 细胶囊滑块 + 三态加深 */
+  --app-scrollbar-thumb: rgba(0, 0, 0, 0.14);
+  --app-scrollbar-thumb-hover: rgba(0, 0, 0, 0.26);
+  --app-scrollbar-thumb-active: rgba(0, 0, 0, 0.38);
+  --app-scrollbar-size: 10px;
+  --app-scrollbar-inset: 2px;
 }
 
 html.dark {
@@ -44,6 +50,10 @@ html.dark {
   /* 暗色页眉：深海军蓝，与近黑背景衔接更柔和，同时保留品牌蓝调 */
   --app-header-bg: #16295c;
   --app-shadow: var(--el-box-shadow-light);
+  /* 暗色改用低透明度白色滑块，避免浅灰滑块与近黑背景冲突 */
+  --app-scrollbar-thumb: rgba(255, 255, 255, 0.12);
+  --app-scrollbar-thumb-hover: rgba(255, 255, 255, 0.24);
+  --app-scrollbar-thumb-active: rgba(255, 255, 255, 0.36);
 }
 
 html,
@@ -88,4 +98,50 @@ a {
 .page-header h2 {
   font-size: 18px;
   font-weight: 600;
+}
+
+/* 滚动条弱化：轨道透明，滑块视觉 6px（10px 轨道内缩 2px 透明边框），
+   但拖拽命中区仍是 10px，弱化视觉的同时不牺牲可用性 */
+::-webkit-scrollbar {
+  width: var(--app-scrollbar-size);
+  height: var(--app-scrollbar-size);
+  background: transparent;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--app-scrollbar-thumb);
+  border: var(--app-scrollbar-inset) solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--app-scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--app-scrollbar-thumb-active);
+}
+
+/* Firefox 兜底：必须隔离在 @supports 内——Chrome 121+ 若同时命中 scrollbar-color
+   会忽略上面的 ::-webkit-scrollbar 规则，收窄视觉宽度的技巧随即失效 */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--app-scrollbar-thumb) transparent;
+  }
+}
+
+/* Element Plus 自绘滚动条（el-table、el-select 下拉等）同步弱化。
+   这些变量声明在 .el-scrollbar 自身，写在 :root 上会被其覆盖，必须同选择器覆盖 */
+.el-scrollbar {
+  --el-scrollbar-opacity: 0.25;
+  --el-scrollbar-hover-opacity: 0.45;
+  --el-scrollbar-bg-color: var(--app-scrollbar-thumb);
+  --el-scrollbar-hover-bg-color: var(--app-scrollbar-thumb-hover);
 }
