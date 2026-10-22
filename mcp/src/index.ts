@@ -169,7 +169,7 @@ const MAX_ATTACHMENT_BYTES = parseMaxFileSize(process.env.PROTASK_MAX_FILE_SIZE)
 /* ------------------------- 服务定义 ------------------------- */
 
 const server = new McpServer(
-  { name: 'protask', version: '1.1.0' },
+  { name: 'protask', version: '1.1.1' },
   {
     instructions: `ProTask 团队任务管理系统的 MCP 服务。
 

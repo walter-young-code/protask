@@ -167,27 +167,35 @@ $snippet = [ordered]@{
 }
 
 # ConvertTo-Json 缩进按绝对位置对齐，嵌套后格式很差；重排为标准 2 空格缩进
-function Format-JsonIndent([string]$raw) {
-  $sb = [Text.StringBuilder]::new()
-  $depth = 0; $inStr = $false; $esc = $false; $bol = $true
-  foreach ($c in $raw.ToCharArray()) {
-    if ($esc) { [void]$sb.Append($c); $esc = $false; continue }
-    if ($inStr) {
-      [void]$sb.Append($c)
-      if ($c -eq '\') { $esc = $true } elseif ($c -eq '"') { $inStr = $false }
-      continue
+# 注意：必须声明 ValueFromPipeline，否则管道输入不会绑定到 $raw（会得到空串并写出空文件）
+function Format-JsonIndent {
+  param(
+    [Parameter(ValueFromPipeline = $true)]
+    [string]$raw
+  )
+  process {
+    $sb = [Text.StringBuilder]::new()
+    $depth = 0; $inStr = $false; $esc = $false; $bol = $true
+    foreach ($c in $raw.ToCharArray()) {
+      if ($esc) { [void]$sb.Append($c); $esc = $false; continue }
+      if ($inStr) {
+        [void]$sb.Append($c)
+        if ($c -eq '\') { $esc = $true } elseif ($c -eq '"') { $inStr = $false }
+        continue
+      }
+      if     ($c -eq '"') { if ($bol) { [void]$sb.Append('  ' * $depth); $bol = $false }; [void]$sb.Append($c); $inStr = $true }
+      elseif ($c -eq '{' -or $c -eq '[') { [void]$sb.AppendLine($c.ToString()); $depth++; $bol = $true }
+      elseif ($c -eq '}' -or $c -eq ']') { $depth--; if (-not $bol) { [void]$sb.AppendLine('') }; [void]$sb.Append('  ' * $depth); [void]$sb.Append($c.ToString()); $bol = $false }
+      elseif ($c -eq ':') { [void]$sb.Append(': ') }
+      elseif ($c -eq ',') { if ($bol) { [void]$sb.Append(',') } else { [void]$sb.AppendLine(',') }; $bol = $true }
+      elseif ($c -match '\S') { if ($bol) { [void]$sb.Append('  ' * $depth); $bol = $false }; [void]$sb.Append($c) }
     }
-    if     ($c -eq '"') { if ($bol) { [void]$sb.Append('  ' * $depth); $bol = $false }; [void]$sb.Append($c); $inStr = $true }
-    elseif ($c -eq '{' -or $c -eq '[') { [void]$sb.AppendLine($c.ToString()); $depth++; $bol = $true }
-    elseif ($c -eq '}' -or $c -eq ']') { $depth--; if (-not $bol) { [void]$sb.AppendLine('') }; [void]$sb.Append('  ' * $depth); [void]$sb.Append($c.ToString()); $bol = $false }
-    elseif ($c -eq ':') { [void]$sb.Append(': ') }
-    elseif ($c -eq ',') { if ($bol) { [void]$sb.Append(',') } else { [void]$sb.AppendLine(',') }; $bol = $true }
-    elseif ($c -match '\S') { if ($bol) { [void]$sb.Append('  ' * $depth); $bol = $false }; [void]$sb.Append($c) }
+    $sb.ToString().TrimEnd()
   }
-  $sb.ToString().TrimEnd()
 }
 
 $snippetJson = $snippet | ConvertTo-Json -Depth 6 | Format-JsonIndent
+if (-not $snippetJson) { throw "配置片段生成失败：内容为空（Format-JsonIndent 未收到管道输入）" }
 $snippetPath = Join-Path $InstallDir 'mcp-config-snippet.json'
 [IO.File]::WriteAllText($snippetPath, $snippetJson, [Text.UTF8Encoding]::new($false))
 

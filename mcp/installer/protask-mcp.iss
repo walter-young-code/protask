@@ -4,7 +4,7 @@
 ;       （登录校验 / Node 运行时检测下载 / 凭证写入 / MCP 握手冒烟测试 / 生成配置片段）
 
 #define MyAppName "ProTask MCP Service"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.1.1"
 #define MyAppPublisher "ProTask"
 
 [Setup]
