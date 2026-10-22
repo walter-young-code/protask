@@ -2,6 +2,7 @@ package com.protask.service;
 
 import com.protask.common.BlockTypes;
 import com.protask.common.BusinessException;
+import com.protask.common.MessageUtil;
 import com.protask.dto.ProjectVO;
 import com.protask.dto.TaskRequest;
 import com.protask.dto.TaskVO;
@@ -12,11 +13,13 @@ import com.protask.mapper.BlockMapper;
 import com.protask.mapper.ProjectMapper;
 import com.protask.mapper.UserMapper;
 import com.protask.permission.PermissionService;
+import com.protask.permission.ProjectPermission;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.HashMap;
@@ -32,6 +35,8 @@ import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -126,6 +131,70 @@ class TaskServiceTest {
         ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
         verify(blockMapper).insert(captor.capture());
         assertTrue(propertiesOf(captor.getValue()).isEmpty());
+    }
+
+    @Test
+    void copyTaskClonesFieldsIntoNewCardInSameProject() {
+        Block source = cardWithProperties(Map.of("p1", "o1"));
+        source.getFields().put("icon", "🚀");
+        source.getFields().put("description", "原始描述");
+        when(blockMapper.selectById(TASK_ID)).thenReturn(source);
+        User copier = new User();
+        copier.setId(USER_ID);
+        copier.setNickname("复制者");
+        when(userMapper.selectBatchIds(anyCollection())).thenReturn(List.of(copier));
+
+        try (MockedStatic<MessageUtil> mocked = mockStatic(MessageUtil.class)) {
+            mocked.when(() -> MessageUtil.get("task.copySuffix")).thenReturn(" 副本");
+            taskService.copyTask(USER_ID, TASK_ID);
+        }
+
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).insert(captor.capture());
+        Block copy = captor.getValue();
+        assertEquals(PROJECT_ID, copy.getProjectId());
+        assertEquals(BlockTypes.CARD, copy.getType());
+        assertEquals("任务 副本", copy.getTitle());
+        assertEquals("🚀", copy.getFields().get("icon"));
+        assertEquals("原始描述", copy.getFields().get("description"));
+        assertEquals(Map.of("p1", "o1"), propertiesOf(copy));
+        assertEquals(USER_ID, copy.getCreatedBy());
+        verify(permissionService).checkPermission(USER_ID, PROJECT_ID,
+                ProjectPermission.MANAGE_PROJECT_CARDS);
+    }
+
+    @Test
+    void copyTaskWhenSourceDeletedThrowsNotFound() {
+        Block card = cardWithProperties(Map.of());
+        card.setDeleteAt(java.time.LocalDateTime.now());
+        when(blockMapper.selectById(TASK_ID)).thenReturn(card);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> taskService.copyTask(USER_ID, TASK_ID));
+        assertEquals("task.notFound", ex.getMessageKey());
+        verify(blockMapper, never()).insert(any(Block.class));
+    }
+
+    @Test
+    void copyTaskTruncatesLongTitleKeepingSuffix() {
+        Block source = cardWithProperties(Map.of());
+        source.setTitle("任".repeat(200));
+        when(blockMapper.selectById(TASK_ID)).thenReturn(source);
+        User copier = new User();
+        copier.setId(USER_ID);
+        copier.setNickname("复制者");
+        when(userMapper.selectBatchIds(anyCollection())).thenReturn(List.of(copier));
+
+        try (MockedStatic<MessageUtil> mocked = mockStatic(MessageUtil.class)) {
+            mocked.when(() -> MessageUtil.get("task.copySuffix")).thenReturn(" 副本");
+            taskService.copyTask(USER_ID, TASK_ID);
+        }
+
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).insert(captor.capture());
+        String title = captor.getValue().getTitle();
+        assertTrue(title.length() <= 200);
+        assertTrue(title.endsWith(" 副本"));
     }
 
     @Test

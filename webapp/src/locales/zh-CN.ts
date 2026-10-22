@@ -229,6 +229,8 @@ export default {
     created: '任务已创建',
     updated: '任务已更新',
     deleted: '任务已删除',
+    copy: '复制',
+    copied: '任务已复制',
     deleteTitle: '删除任务',
     deleteConfirm: '确定删除任务「{title}」吗？',
     iconLabel: '任务图标',

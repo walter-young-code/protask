@@ -54,6 +54,12 @@ public class TaskController {
         return Result.ok(taskService.createTask(StpUtil.getLoginIdAsLong(), projectId, request));
     }
 
+    /** 复制任务（同项目内，标题自动追加副本后缀） */
+    @PostMapping("/tasks/{id}/copy")
+    public Result<TaskVO> copy(@PathVariable Long id) {
+        return Result.ok(taskService.copyTask(StpUtil.getLoginIdAsLong(), id));
+    }
+
     /** 更新任务 */
     @PutMapping("/tasks/{id}")
     public Result<TaskVO> update(@PathVariable Long id, @Valid @RequestBody TaskRequest request) {

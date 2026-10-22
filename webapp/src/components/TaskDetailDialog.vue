@@ -2,7 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { appMessage } from '@/utils/appMessage'
-import { Delete, Document, Download, Position, Upload, View } from '@element-plus/icons-vue'
+import { CopyDocument, Delete, Document, Download, MoreFilled, Position, Upload, View } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -538,6 +538,27 @@ async function handleDeleteTask() {
   emit('saved')
 }
 
+/** 复制任务：有未保存修改时先保存，保证复制内容与当前表单一致；复制后保留弹窗并刷新列表 */
+async function handleCopyTask() {
+  if (!props.task) return
+  if (formDirty.value) {
+    await handleSave()
+    if (formDirty.value) return // 校验未通过（如标题为空），中止复制
+  }
+  await taskApi.copyTask(props.task.id)
+  appMessage.success(t('task.copied'))
+  emit('saved')
+}
+
+/** 头部“更多”菜单命令分发（复制 / 删除） */
+function handleHeaderCommand(command: string) {
+  if (command === 'copy') {
+    void handleCopyTask()
+  } else if (command === 'delete') {
+    void handleDeleteTask()
+  }
+}
+
 async function handleSubmitComment() {
   if (!props.task || !commentContent.value.trim()) return
   submittingComment.value = true
@@ -725,15 +746,31 @@ function formatTime(value?: string) {
       <div class="detail-header">
         <el-icon class="detail-header-icon"><Position /></el-icon>
         <span class="detail-header-hint">{{ t('taskDetail.title') }}</span>
-        <el-button
+        <!-- 复制/删除折叠入“更多”菜单，避免头部按钮过多 -->
+        <el-dropdown
           v-if="editable"
-          link
-          type="danger"
-          class="detail-delete"
-          @click="handleDeleteTask"
+          trigger="click"
+          class="detail-more"
+          @command="handleHeaderCommand"
         >
-          {{ t('common.delete') }}
-        </el-button>
+          <el-button link class="detail-more-btn" :title="t('common.more')">
+            <el-icon :size="18"><MoreFilled /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="copy" :icon="CopyDocument">
+                {{ t('task.copy') }}
+              </el-dropdown-item>
+              <el-dropdown-item
+                command="delete"
+                :icon="Delete"
+                style="color: var(--el-color-danger)"
+              >
+                {{ t('common.delete') }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </template>
 
@@ -1051,9 +1088,18 @@ function formatTime(value?: string) {
   color: var(--app-text-secondary);
 }
 
-.detail-delete {
+.detail-more {
   margin-left: auto;
   margin-right: 24px;
+}
+
+.detail-more-btn {
+  padding: 4px;
+  color: var(--app-text-secondary);
+}
+
+.detail-more-btn:hover {
+  color: var(--el-color-primary);
 }
 
 .detail-title-row {

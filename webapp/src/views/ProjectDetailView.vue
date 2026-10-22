@@ -293,6 +293,13 @@ function handleDateChange(propertyId: string) {
   handleUpdateConfig(view.id, { ...view.config, dateId: propertyId })
 }
 
+/** 复制任务：成功后刷新列表（副本按创建时间倒序出现在最前） */
+async function handleCopy(task: TaskVO) {
+  await taskApi.copyTask(task.id)
+  appMessage.success(t('task.copied'))
+  await loadTasks()
+}
+
 async function handleDelete(task: TaskVO) {
   try {
     await ElMessageBox.confirm(t('task.deleteConfirm', { title: task.title }), t('task.deleteTitle'), {
@@ -499,6 +506,7 @@ watch(
       :member-map="memberMap"
       @open="openDetail"
       @delete="handleDelete"
+      @copy="handleCopy"
       @quick-add="openCreateDialog"
     />
     <KanbanView

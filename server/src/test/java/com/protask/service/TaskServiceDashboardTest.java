@@ -148,7 +148,7 @@ class TaskServiceDashboardTest {
 
     @Test
     void myTasksCountsOnlyAssignee() {
-        // 仅统计当前用户为负责人属性值的任务；纯创建者任务不计入
+        // 仅统计当前用户为负责人属性值的未完成任务；纯创建者任务不计入
         Block createdByMe = card(1L, PROJECT_ID, USER_ID, Map.of());
         Block bothMine = card(2L, PROJECT_ID, USER_ID, Map.of("assignee", USER_ID.intValue()));
         Block assignedToMe = card(3L, PROJECT_ID, OTHER_USER_ID, Map.of("assignee", USER_ID.intValue()));
@@ -159,6 +159,23 @@ class TaskServiceDashboardTest {
         assertEquals(4, vo.getTotalTasks());
         assertEquals(2, vo.getMyTasks());
         assertEquals(2, vo.getMyTaskList().size());
+    }
+
+    @Test
+    void myTasksExcludesDoneTasks() {
+        // 我负责但已完成的任务不计入"我负责的"，仍计入已完成
+        Block doneMine = card(1L, PROJECT_ID, OTHER_USER_ID, Map.of(
+                "assignee", USER_ID.intValue(),
+                "status", "done"));
+        Block openMine = card(2L, PROJECT_ID, OTHER_USER_ID, Map.of("assignee", USER_ID.intValue()));
+        mockVisibleProjects(List.of(builtinProject()), List.of(doneMine, openMine));
+
+        DashboardVO vo = taskService.getDashboard(USER_ID);
+        assertEquals(2, vo.getTotalTasks());
+        assertEquals(1, vo.getDoneTasks());
+        assertEquals(1, vo.getMyTasks());
+        assertEquals(1, vo.getMyTaskList().size());
+        assertEquals(2L, vo.getMyTaskList().get(0).getId());
     }
 
     @Test

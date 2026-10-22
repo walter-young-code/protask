@@ -18,6 +18,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'open', task: TaskVO): void
   (e: 'delete', task: TaskVO): void
+  /** 复制任务（同项目内） */
+  (e: 'copy', task: TaskVO): void
   /** 新建任务：打开创建弹窗（表格视图无分组，不预置属性） */
   (e: 'quickAdd'): void
 }>()
@@ -46,11 +48,14 @@ const { t } = useI18n()
       >
         <template #default="{ row }">{{ propertyDisplayText(row as TaskVO, prop, props.memberMap) }}</template>
       </el-table-column>
-      <el-table-column v-if="editable" :label="t('task.columns.actions')" width="140" fixed="right">
+      <el-table-column v-if="editable" :label="t('task.columns.actions')" width="190" fixed="right">
         <template #default="{ row }">
           <span class="row-actions">
             <el-button link type="primary" size="small" @click.stop="emit('open', row as TaskVO)">
               {{ t('common.edit') }}
+            </el-button>
+            <el-button link type="primary" size="small" @click.stop="emit('copy', row as TaskVO)">
+              {{ t('task.copy') }}
             </el-button>
             <el-button link type="danger" size="small" @click.stop="emit('delete', row as TaskVO)">
               {{ t('common.delete') }}

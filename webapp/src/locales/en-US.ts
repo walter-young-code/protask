@@ -234,6 +234,8 @@ export default {
     created: 'Task created',
     updated: 'Task updated',
     deleted: 'Task deleted',
+    copy: 'Copy',
+    copied: 'Task copied',
     deleteTitle: 'Delete Task',
     deleteConfirm: 'Are you sure to delete task "{title}"?',
     iconLabel: 'Task Icon',

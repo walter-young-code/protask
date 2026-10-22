@@ -15,6 +15,9 @@ export const searchTasks = (keyword: string) =>
 export const createTask = (projectId: number, data: TaskRequest) =>
   post<TaskVO>(`/v1/projects/${projectId}/tasks`, data)
 
+/** 复制任务（同项目内，标题自动追加副本后缀） */
+export const copyTask = (id: number) => post<TaskVO>(`/v1/tasks/${id}/copy`)
+
 /** 更新任务 */
 export const updateTask = (id: number, data: TaskRequest) => put<TaskVO>(`/v1/tasks/${id}`, data)
 

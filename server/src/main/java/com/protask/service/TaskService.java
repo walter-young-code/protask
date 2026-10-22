@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.protask.common.BlockTypes;
 import com.protask.common.BusinessException;
+import com.protask.common.MessageUtil;
 import com.protask.common.ResultCode;
 import com.protask.common.SqlUtil;
 import com.protask.dto.DashboardTaskItemVO;
@@ -53,6 +54,9 @@ public class TaskService {
 
     /** 即将到期窗口（天）：今天起 7 天内截止 */
     private static final long DUE_SOON_DAYS = 7;
+
+    /** 任务标题最大长度（与 TaskRequest 校验一致） */
+    private static final int MAX_TITLE_LENGTH = 200;
 
     /** 内置属性 id 约定（对齐前端 BUILTIN_PROPERTIES，仅模板含对应 id 的项目参与该维度统计） */
     private static final String PROP_STATUS = "status";
@@ -126,7 +130,7 @@ public class TaskService {
      * 跨项目仪表盘：在当前用户可见项目内聚合任务统计与分类列表。
      * 统计口径基于内置属性 id 约定：status（done=已完成）、priority（p0=紧急）、
      * dueDate（早于今天且未完成=逾期；今天起 7 天内且未完成=即将到期），
-     * 我参与 = 我创建 或 项目负责人（模板中第一个 member 类型属性）指向我。
+     * 我负责 = 项目负责人（模板中第一个 member 类型属性）指向我且未完成。
      * 项目未添加对应内置属性时不参与该维度统计；用户自定义的同类型属性不计入。
      */
     public DashboardVO getDashboard(Long userId) {
@@ -170,7 +174,7 @@ public class TaskService {
             boolean isDueSoon = !isDone && due != null
                     && !due.isBefore(today) && !due.isAfter(today.plusDays(DUE_SOON_DAYS));
             boolean isUrgent = scope.hasPriority() && PRIORITY_URGENT.equals(asString(properties.get(PROP_PRIORITY)));
-            boolean isMine = scope.memberPropId() != null
+            boolean isMine = !isDone && scope.memberPropId() != null
                     && userId.toString().equals(asString(properties.get(scope.memberPropId())));
 
             if (isMine) {
@@ -344,6 +348,46 @@ public class TaskService {
         card.setModifiedBy(userId);
         blockMapper.insert(card);
         return toVO(card, nicknameMap(List.of(card)));
+    }
+
+    /**
+     * 复制任务卡片（同项目内），仅复制卡片内容：标题加副本后缀、图标、描述、动态属性。
+     * 不复制评论与附件；需卡片管理权限。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public TaskVO copyTask(Long userId, Long taskId) {
+        Block source = getCard(taskId);
+        permissionService.checkPermission(userId, source.getProjectId(),
+                ProjectPermission.MANAGE_PROJECT_CARDS);
+
+        Block copy = new Block();
+        copy.setProjectId(source.getProjectId());
+        copy.setSchemaVer(source.getSchemaVer());
+        copy.setType(BlockTypes.CARD);
+        copy.setTitle(resolveCopyTitle(source.getTitle()));
+        Map<String, Object> sourceFields = source.getFields() != null
+                ? source.getFields() : Map.of();
+        Map<String, Object> fields = new HashMap<>(sourceFields);
+        // properties 嵌套 map 单独复制，避免与源卡片共享引用
+        if (sourceFields.get("properties") instanceof Map<?, ?> properties) {
+            fields.put("properties", new HashMap<>(properties));
+        }
+        copy.setFields(fields);
+        copy.setCreatedBy(userId);
+        copy.setModifiedBy(userId);
+        blockMapper.insert(copy);
+        return toVO(copy, nicknameMap(List.of(copy)));
+    }
+
+    /** 副本标题：源标题 + 后缀；源标题过长时截断源标题，保证总长不超过 200 且后缀完整 */
+    private String resolveCopyTitle(String sourceTitle) {
+        String suffix = MessageUtil.get("task.copySuffix");
+        String base = sourceTitle != null ? sourceTitle : "";
+        int maxBase = MAX_TITLE_LENGTH - suffix.length();
+        if (base.length() > maxBase) {
+            base = base.substring(0, maxBase);
+        }
+        return base + suffix;
     }
 
     /**
