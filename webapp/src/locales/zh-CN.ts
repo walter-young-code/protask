@@ -327,6 +327,8 @@ export default {
     showProperties: '显示属性',
     commentCount: '{count} 条评论',
     noComment: '暂无评论',
+    attachmentCount: '{count} 个附件',
+    noAttachment: '暂无附件',
     noGroup: '未分组',
     checked: '已勾选',
     unchecked: '未勾选',

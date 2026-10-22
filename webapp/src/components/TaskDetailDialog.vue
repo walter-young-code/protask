@@ -175,7 +175,8 @@ async function handleAttachmentSelected(event: Event) {
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files ?? [])
   input.value = '' // 清空以便再次选择同一文件
-  if (!files.length || !props.task) return
+  const task = props.task
+  if (!files.length || !task) return
   const accepted: File[] = []
   for (const file of files) {
     if (file.size > maxAttachmentBytes.value) {
@@ -196,7 +197,7 @@ async function handleAttachmentSelected(event: Event) {
   try {
     for (const file of accepted) {
       try {
-        await attachmentApi.uploadAttachment(props.task.id, file)
+        await attachmentApi.uploadAttachment(task.id, file)
         success++
       } catch {
         // 单个文件失败已由请求拦截器提示，继续上传剩余文件
@@ -208,6 +209,10 @@ async function handleAttachmentSelected(event: Event) {
       appMessage.success(t('attachment.uploadSuccessCount', { count: success }))
     }
     await loadAttachments()
+    // 同步容器中的卡片附件数徽标
+    if (success > 0) {
+      emit('saved', { ...task, attachmentCount: attachmentTotal.value })
+    }
   } finally {
     uploadingAttachment.value = false
   }
@@ -239,7 +244,7 @@ async function handleDeleteAttachment(att: AttachmentVO) {
     form.description = form.description.replace(new RegExp(`!\\[[^\\]]*\\]\\(${escaped}\\)`, 'g'), '')
     initialSnapshot.value = snapshotForm()
     await loadAttachments()
-    emit('saved', { ...task, description: form.description })
+    emit('saved', { ...task, description: form.description, attachmentCount: attachmentTotal.value })
   } catch {
     // 错误提示已由请求拦截器统一处理
   }

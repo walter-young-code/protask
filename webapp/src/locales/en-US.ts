@@ -332,6 +332,8 @@ export default {
     showProperties: 'Show Properties',
     commentCount: '{count} comments',
     noComment: 'No comments',
+    attachmentCount: '{count} attachments',
+    noAttachment: 'No attachments',
     noGroup: 'No group',
     checked: 'Checked',
     unchecked: 'Unchecked',

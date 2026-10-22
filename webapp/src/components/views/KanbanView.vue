@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ChatDotRound, Plus } from '@element-plus/icons-vue'
+import { ChatDotRound, Paperclip, Plus } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { propertyDisplayText } from '@/utils/meta'
 import type { CardProperty, TaskVO } from '@/types'
@@ -188,6 +188,17 @@ function commentTip(task: TaskVO): string {
   return count > 0 ? t('kanban.commentCount', { count }) : t('kanban.noComment')
 }
 
+/** 任务附件数（无数据按 0 计） */
+function attachmentCountOf(task: TaskVO): number {
+  return task.attachmentCount ?? 0
+}
+
+/** 附件提醒 tooltip 文案 */
+function attachmentTip(task: TaskVO): string {
+  const count = attachmentCountOf(task)
+  return count > 0 ? t('kanban.attachmentCount', { count }) : t('kanban.noAttachment')
+}
+
 /** 拖拽状态 */
 const draggingTask = ref<TaskVO | null>(null)
 const dragOverColumn = ref<string | null>(null)
@@ -372,6 +383,17 @@ function handleGroupChange(propertyId: string) {
                 </span>
               </div>
               <div class="kanban-card-footer">
+                <el-tooltip :content="attachmentTip(task)" placement="top">
+                  <span
+                    class="kanban-card-attachments"
+                    :class="{ active: attachmentCountOf(task) > 0 }"
+                  >
+                    <el-icon><Paperclip /></el-icon>
+                    <span v-if="attachmentCountOf(task) > 0" class="kanban-card-attachment-count">
+                      {{ attachmentCountOf(task) }}
+                    </span>
+                  </span>
+                </el-tooltip>
                 <el-tooltip :content="commentTip(task)" placement="top">
                   <span
                     class="kanban-card-comments"
@@ -571,6 +593,24 @@ function handleGroupChange(propertyId: string) {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 12px;
+}
+
+.kanban-card-attachments {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 13px;
+  color: var(--app-text-placeholder);
+}
+
+.kanban-card-attachments.active {
+  color: var(--el-color-primary);
+}
+
+.kanban-card-attachment-count {
+  font-size: 12px;
+  line-height: 1;
 }
 
 .kanban-card-comments {

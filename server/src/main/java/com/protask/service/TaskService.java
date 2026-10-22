@@ -1,6 +1,7 @@
 package com.protask.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,9 +15,11 @@ import com.protask.dto.DashboardVO;
 import com.protask.dto.ProjectVO;
 import com.protask.dto.TaskRequest;
 import com.protask.dto.TaskVO;
+import com.protask.entity.Attachment;
 import com.protask.entity.Block;
 import com.protask.entity.Project;
 import com.protask.entity.User;
+import com.protask.mapper.AttachmentMapper;
 import com.protask.mapper.BlockMapper;
 import com.protask.mapper.ProjectMapper;
 import com.protask.mapper.UserMapper;
@@ -74,6 +77,7 @@ public class TaskService {
     private final BlockMapper blockMapper;
     private final ProjectMapper projectMapper;
     private final UserMapper userMapper;
+    private final AttachmentMapper attachmentMapper;
     private final PermissionService permissionService;
 
     /**
@@ -88,9 +92,10 @@ public class TaskService {
                 .isNull(Block::getDeleteAt)
                 .orderByDesc(Block::getCreateAt));
         Map<Long, String> nicknames = nicknameMap(cards);
+        Map<Long, Long> attachmentCounts = attachmentCountMap(cards.stream().map(Block::getId).toList());
         List<TaskVO> vos = new ArrayList<>();
         for (Block card : cards) {
-            vos.add(toVO(card, nicknames));
+            vos.add(toVO(card, nicknames, attachmentCounts.getOrDefault(card.getId(), 0L)));
         }
         return vos;
     }
@@ -117,9 +122,10 @@ public class TaskService {
                         .map(Block::getProjectId).collect(Collectors.toSet())).stream()
                 .collect(Collectors.toMap(Project::getId, Project::getName));
         Map<Long, String> nicknames = nicknameMap(cards);
+        Map<Long, Long> attachmentCounts = attachmentCountMap(cards.stream().map(Block::getId).toList());
         List<TaskVO> vos = new ArrayList<>();
         for (Block card : cards) {
-            TaskVO vo = toVO(card, nicknames);
+            TaskVO vo = toVO(card, nicknames, attachmentCounts.getOrDefault(card.getId(), 0L));
             vo.setProjectName(projectNames.get(card.getProjectId()));
             vos.add(vo);
         }
@@ -347,7 +353,7 @@ public class TaskService {
         card.setCreatedBy(userId);
         card.setModifiedBy(userId);
         blockMapper.insert(card);
-        return toVO(card, nicknameMap(List.of(card)));
+        return toVO(card, nicknameMap(List.of(card)), 0L);
     }
 
     /**
@@ -376,7 +382,8 @@ public class TaskService {
         copy.setCreatedBy(userId);
         copy.setModifiedBy(userId);
         blockMapper.insert(copy);
-        return toVO(copy, nicknameMap(List.of(copy)));
+        // 附件不随任务复制，副本附件数为 0
+        return toVO(copy, nicknameMap(List.of(copy)), 0L);
     }
 
     /** 副本标题：源标题 + 后缀；源标题过长时截断源标题，保证总长不超过 200 且后缀完整 */
@@ -411,7 +418,8 @@ public class TaskService {
         card.setFields(fields);
         card.setModifiedBy(userId);
         blockMapper.updateById(card);
-        return toVO(card, nicknameMap(List.of(card)));
+        return toVO(card, nicknameMap(List.of(card)),
+                attachmentCountMap(List.of(taskId)).getOrDefault(taskId, 0L));
     }
 
     /**
@@ -471,9 +479,9 @@ public class TaskService {
     }
 
     /**
-     * card 块转任务视图对象，补充创建人昵称。
+     * card 块转任务视图对象，补充创建人昵称与附件数量。
      */
-    private TaskVO toVO(Block card, Map<Long, String> nicknames) {
+    private TaskVO toVO(Block card, Map<Long, String> nicknames, long attachmentCount) {
         TaskVO vo = new TaskVO();
         vo.setId(card.getId());
         vo.setProjectId(card.getProjectId());
@@ -487,6 +495,27 @@ public class TaskService {
             vo.setDescription(asString(card.getFields().get("description")));
         }
         vo.setCreatorName(nicknames.get(card.getCreatedBy()));
+        vo.setAttachmentCount(attachmentCount);
         return vo;
+    }
+
+    /**
+     * 批量统计各任务附件数（任务 id -> 附件数），避免逐任务查询的 N+1。
+     */
+    private Map<Long, Long> attachmentCountMap(List<Long> taskIds) {
+        if (taskIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Map<String, Object>> rows = attachmentMapper.selectMaps(
+                new QueryWrapper<Attachment>()
+                        .select("task_id AS taskId", "COUNT(*) AS cnt")
+                        .in("task_id", taskIds)
+                        .groupBy("task_id"));
+        Map<Long, Long> counts = new HashMap<>();
+        for (Map<String, Object> row : rows) {
+            counts.put(((Number) row.get("taskId")).longValue(),
+                    ((Number) row.get("cnt")).longValue());
+        }
+        return counts;
     }
 }

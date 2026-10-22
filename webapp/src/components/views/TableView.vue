@@ -48,6 +48,20 @@ const { t } = useI18n()
       >
         <template #default="{ row }">{{ propertyDisplayText(row as TaskVO, prop, props.memberMap) }}</template>
       </el-table-column>
+      <!-- 附件数：行尾无表头的数字标签（样式同仪表盘统计标签），无附件时不占位 -->
+      <el-table-column width="56" align="center">
+        <template #default="{ row }">
+          <el-tag
+            v-if="(row as TaskVO).attachmentCount"
+            size="small"
+            type="info"
+            effect="plain"
+            :title="t('kanban.attachmentCount', { count: (row as TaskVO).attachmentCount })"
+          >
+            {{ (row as TaskVO).attachmentCount }}
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column v-if="editable" :label="t('task.columns.actions')" width="140" fixed="right">
         <template #default="{ row }">
           <span class="row-actions">

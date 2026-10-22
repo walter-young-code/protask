@@ -5,6 +5,7 @@ import com.protask.dto.DashboardVO;
 import com.protask.dto.ProjectVO;
 import com.protask.entity.Block;
 import com.protask.entity.User;
+import com.protask.mapper.AttachmentMapper;
 import com.protask.mapper.BlockMapper;
 import com.protask.mapper.ProjectMapper;
 import com.protask.mapper.UserMapper;
@@ -49,13 +50,17 @@ class TaskServiceDashboardTest {
     private UserMapper userMapper;
 
     @Mock
+    private AttachmentMapper attachmentMapper;
+
+    @Mock
     private PermissionService permissionService;
 
     private TaskService taskService;
 
     @BeforeEach
     void setUp() {
-        taskService = new TaskService(blockMapper, projectMapper, userMapper, permissionService);
+        taskService = new TaskService(blockMapper, projectMapper, userMapper, attachmentMapper,
+                permissionService);
     }
 
     private User normalUser() {

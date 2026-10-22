@@ -9,6 +9,7 @@ import com.protask.dto.TaskVO;
 import com.protask.entity.Block;
 import com.protask.entity.Project;
 import com.protask.entity.User;
+import com.protask.mapper.AttachmentMapper;
 import com.protask.mapper.BlockMapper;
 import com.protask.mapper.ProjectMapper;
 import com.protask.mapper.UserMapper;
@@ -61,13 +62,17 @@ class TaskServiceTest {
     private UserMapper userMapper;
 
     @Mock
+    private AttachmentMapper attachmentMapper;
+
+    @Mock
     private PermissionService permissionService;
 
     private TaskService taskService;
 
     @BeforeEach
     void setUp() {
-        taskService = new TaskService(blockMapper, projectMapper, userMapper, permissionService);
+        taskService = new TaskService(blockMapper, projectMapper, userMapper, attachmentMapper,
+                permissionService);
     }
 
     private Project existingProject() {
@@ -295,5 +300,30 @@ class TaskServiceTest {
         assertEquals("示例项目", result.get(0).getProjectName());
         assertEquals("张三", result.get(0).getCreatorName());
         assertEquals(Map.of("p1", "o1"), result.get(0).getProperties());
+    }
+
+    @Test
+    void listTasksFillsAttachmentCountPerTask() {
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(existingProject());
+        when(blockMapper.selectList(any())).thenReturn(List.of(cardWithProperties(Map.of())));
+        when(attachmentMapper.selectMaps(any()))
+                .thenReturn(List.of(Map.of("taskId", TASK_ID, "cnt", 3L)));
+
+        List<TaskVO> result = taskService.listTasks(USER_ID, PROJECT_ID);
+
+        assertEquals(1, result.size());
+        assertEquals(3L, result.get(0).getAttachmentCount());
+    }
+
+    @Test
+    void listTasksWithoutAttachmentsReportsZero() {
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(existingProject());
+        when(blockMapper.selectList(any())).thenReturn(List.of(cardWithProperties(Map.of())));
+        when(attachmentMapper.selectMaps(any())).thenReturn(List.of());
+
+        List<TaskVO> result = taskService.listTasks(USER_ID, PROJECT_ID);
+
+        assertEquals(1, result.size());
+        assertEquals(0L, result.get(0).getAttachmentCount());
     }
 }

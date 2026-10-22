@@ -36,4 +36,7 @@ public class TaskVO {
 
     /** 卡片全部动态属性（按项目 cardProperties 模板定义） */
     private Map<String, Object> properties;
+
+    /** 附件数量（任务下附件记录数） */
+    private Long attachmentCount;
 }

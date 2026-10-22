@@ -340,6 +340,8 @@ export interface TaskVO {
   updatedAt: string
   /** 卡片全部动态属性 */
   properties?: Record<string, unknown>
+  /** 附件数量（随任务列表返回） */
+  attachmentCount?: number
 }
 
 /** 创建/更新任务请求（properties 整体替换卡片属性值） */
