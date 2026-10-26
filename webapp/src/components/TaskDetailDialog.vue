@@ -62,6 +62,9 @@ const descMode = ref<'edit' | 'preview'>('preview')
 /** 描述编辑区原生 textarea（Markdown 工具条光标操作） */
 const descEditorRef = ref<{ $el: HTMLElement }>()
 
+/** 描述编辑器最近一次光标/选区快照：工具条按钮按下会抢走焦点，插入位置以失焦前的光标为准 */
+let descSelection: { start: number; end: number } | null = null
+
 /** 点击图片按钮时的选区快照：打开选择器到插入之间是异步的，插入位置以打开选择器时刻为准 */
 let imageInsertRange: { start: number; end: number } | null = null
 
@@ -155,9 +158,7 @@ async function loadAttachments(reset = true) {
 /** 打开图片选择器：记录打开时刻的选区（插入位置以打开时为准） */
 function openImagePicker() {
   const textarea = descTextarea()
-  imageInsertRange = textarea
-    ? { start: textarea.selectionStart, end: textarea.selectionEnd }
-    : null
+  imageInsertRange = textarea ? resolveDescRange(textarea) : null
   imagePickerVisible.value = true
 }
 
@@ -306,6 +307,29 @@ function descTextarea(): HTMLTextAreaElement | null {
   return descEditorRef.value?.$el?.querySelector('textarea') ?? null
 }
 
+/** 记录描述编辑器当前光标/选区（光标移动、输入、点击、失焦时同步） */
+function syncDescSelection() {
+  const textarea = descTextarea()
+  if (!textarea) return
+  descSelection = { start: textarea.selectionStart, end: textarea.selectionEnd }
+}
+
+/**
+ * 解析插入位置：编辑器保持焦点时用实时选区；
+ * 否则退回最近一次记录的光标位置（工具条按钮按下后 textarea 已失焦，实时选区不可靠）。
+ */
+function resolveDescRange(textarea: HTMLTextAreaElement): { start: number; end: number } {
+  if (document.activeElement === textarea) {
+    return { start: textarea.selectionStart, end: textarea.selectionEnd }
+  }
+  // 快照可能因描述内容变化而越界，需按当前文本长度收敛
+  const max = textarea.value.length
+  if (descSelection) {
+    return { start: Math.min(descSelection.start, max), end: Math.min(descSelection.end, max) }
+  }
+  return { start: max, end: max }
+}
+
 /** 在光标/选区处插入或包裹 Markdown 语法，并恢复焦点与选区（图片动作走文件上传） */
 async function applyMarkdownSyntax(action: MarkdownAction) {
   const textarea = descTextarea()
@@ -314,12 +338,8 @@ async function applyMarkdownSyntax(action: MarkdownAction) {
     openImagePicker()
     return
   }
-  if (document.activeElement !== textarea) {
-    textarea.focus()
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length)
-  }
-  const start = textarea.selectionStart
-  const end = textarea.selectionEnd
+  // 以点击按钮时刻的光标位置插入，而不是把光标重置到文本末尾
+  const { start, end } = resolveDescRange(textarea)
   const selected = form.description.slice(start, end)
   const inner = selected || action.placeholder || ''
   form.description =
@@ -328,6 +348,7 @@ async function applyMarkdownSyntax(action: MarkdownAction) {
     textarea.focus()
     const caret = start + action.before.length
     textarea.setSelectionRange(caret, caret + inner.length)
+    descSelection = { start: caret, end: caret + inner.length }
   })
 }
 
@@ -372,8 +393,8 @@ async function insertImageSyntax(url: string) {
     textarea = descTextarea()
     if (!textarea) return
   }
-  // 快照一次性使用（点击按钮时刻的选区）；无快照时退回当前选区
-  const range = imageInsertRange ?? { start: textarea.selectionStart, end: textarea.selectionEnd }
+  // 快照一次性使用（点击按钮时刻的选区）；无快照时退回当前光标位置
+  const range = imageInsertRange ?? resolveDescRange(textarea)
   imageInsertRange = null
   const { start, end } = range
   const alt = form.description.slice(start, end) || t('markdown.imageAltDefault')
@@ -383,6 +404,7 @@ async function insertImageSyntax(url: string) {
     textarea.focus()
     const caret = start + syntax.length // 定位到图片语法之后，继续输入直接跟在图片后面
     textarea.setSelectionRange(caret, caret)
+    descSelection = { start: caret, end: caret }
   })
 }
 const renderedDescription = computed(() => {
@@ -400,6 +422,8 @@ function initForm() {
   for (const prop of props.cardProperties ?? []) {
     form.propertyValues[prop.id] = props.task.properties?.[prop.id] ?? ''
   }
+  // 切换任务时清空上一任务的光标快照
+  descSelection = null
   initialSnapshot.value = snapshotForm()
 }
 
@@ -827,10 +851,12 @@ function formatTime(value?: string) {
         <div v-if="descMode === 'edit'" class="markdown-actions">
           <template v-for="action in markdownActions" :key="action.key">
             <el-tooltip v-if="action.key !== 'image'" :content="action.title" placement="top">
+              <!-- mousedown.prevent：阻止按钮抢走编辑器焦点，保证格式插到光标处 -->
               <el-button
                 text
                 size="small"
                 class="markdown-action-btn"
+                @mousedown.prevent
                 @click="applyMarkdownSyntax(action)"
               >
                 {{ action.label }}
@@ -846,7 +872,7 @@ function formatTime(value?: string) {
               @show="openImagePicker"
             >
               <template #reference>
-                <el-button text size="small" class="markdown-action-btn">
+                <el-button text size="small" class="markdown-action-btn" @mousedown.prevent>
                   {{ action.label }}
                 </el-button>
               </template>
@@ -879,6 +905,10 @@ function formatTime(value?: string) {
           :autosize="{ minRows: 2, maxRows: 20 }"
           :placeholder="t('task.descriptionPlaceholder')"
           @keydown.ctrl.enter="handleSave"
+          @select="syncDescSelection"
+          @keyup="syncDescSelection"
+          @click="syncDescSelection"
+          @blur="syncDescSelection"
         />
         <!-- 已插入图片列表已迁移至附件区（图片附件可插入描述/删除） -->
       </div>

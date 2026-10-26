@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox, type InputInstance } from 'element-plus'
 import { appMessage } from '@/utils/appMessage'
@@ -132,6 +132,105 @@ function categoryNameOf(id: number): string {
   return categoryStore.categories.find((c) => c.id === id)?.name ?? ''
 }
 
+/** 分类展开状态持久化存储键（按用户隔离，避免同浏览器多账号互相影响） */
+const OPENED_CATEGORY_KEY = 'protask-sidebar-opened-categories'
+
+/** el-menu 暴露的方法（仅用到按 index 展开/折叠子菜单） */
+interface MenuHandle {
+  open: (index: string) => void
+  close: (index: string) => void
+}
+
+/** 已展开的分类 id 列表（与 localStorage 保持同步，刷新后恢复） */
+const openedCategoryIds = ref<number[]>([])
+const asideMenuRef = ref<MenuHandle>()
+/** 首次恢复完成前不回写持久化：避免菜单按当前路由自动展开分类时污染已保存状态 */
+let openedStateRestored = false
+/** 程序化恢复展开状态期间不回写持久化，避免内部 open 事件覆盖已保存状态 */
+let syncingOpenedState = false
+
+/** el-menu 初始展开项：侧边栏折叠后重新展开时菜单会重建，用它在首帧直接还原 */
+const defaultOpenedMenuIndexes = computed(() =>
+  openedCategoryIds.value.map((id) => `category-${id}`),
+)
+
+function openedCategoryStorageKey(): string {
+  const userId = userStore.user?.id
+  return userId ? `${OPENED_CATEGORY_KEY}-${userId}` : OPENED_CATEGORY_KEY
+}
+
+/** 读取已保存的展开分类 id（内容异常时按全部折叠处理） */
+function readOpenedCategoryIds(): number[] {
+  try {
+    const raw = localStorage.getItem(openedCategoryStorageKey())
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed.filter((id): id is number => typeof id === 'number') : []
+  } catch {
+    return []
+  }
+}
+
+function persistOpenedCategoryIds() {
+  localStorage.setItem(openedCategoryStorageKey(), JSON.stringify(openedCategoryIds.value))
+}
+
+/** 从子菜单 index（category-<id>）解析分类 id，非分类菜单返回 null */
+function categoryIdOfMenuIndex(index: string): number | null {
+  if (!index.startsWith('category-')) return null
+  const id = Number(index.slice('category-'.length))
+  return Number.isNaN(id) ? null : id
+}
+
+/** 把已保存的展开状态应用到菜单：已展开的打开，其余显式折叠（保持与刷新前一致） */
+async function syncOpenedCategoryState() {
+  await nextTick()
+  const menu = asideMenuRef.value
+  if (!menu) return
+  const opened = new Set(openedCategoryIds.value)
+  syncingOpenedState = true
+  try {
+    for (const group of groupedProjects.value.categories) {
+      const index = `category-${group.id}`
+      if (opened.has(group.id)) menu.open(index)
+      else menu.close(index)
+    }
+  } finally {
+    syncingOpenedState = false
+    openedStateRestored = true
+  }
+}
+
+/** 用户展开分类：记录并持久化 */
+function handleCategoryOpen(index: string) {
+  const id = categoryIdOfMenuIndex(index)
+  if (id === null || syncingOpenedState || !openedStateRestored) return
+  if (openedCategoryIds.value.includes(id)) return
+  openedCategoryIds.value = [...openedCategoryIds.value, id]
+  persistOpenedCategoryIds()
+}
+
+/** 用户折叠分类：移除并持久化 */
+function handleCategoryClose(index: string) {
+  const id = categoryIdOfMenuIndex(index)
+  if (id === null || syncingOpenedState || !openedStateRestored) return
+  if (!openedCategoryIds.value.includes(id)) return
+  openedCategoryIds.value = openedCategoryIds.value.filter((item) => item !== id)
+  persistOpenedCategoryIds()
+}
+
+/** 分类分组变化（新建分类/归类项目/搜索过滤）后重新应用展开状态 */
+watch(
+  () => groupedProjects.value.categories.map((group) => group.id).join(','),
+  () => {
+    if (openedStateRestored) void syncOpenedCategoryState()
+  },
+)
+
+/** 侧边栏折叠再展开时 menus 重建，需重新应用展开状态 */
+watch(asideCollapsed, () => {
+  if (openedStateRestored) void syncOpenedCategoryState()
+})
+
 /** 是否命中项目搜索关键词（用于无结果提示） */
 const hasSearchKeyword = computed(() => projectKeyword.value.trim().length > 0)
 
@@ -150,6 +249,9 @@ onMounted(async () => {
   } catch {
     // 分类列表加载失败不影响主流程
   }
+  // 恢复侧边栏分类的展开/折叠状态：分类渲染完成后应用，保证刷新前后一致
+  openedCategoryIds.value = readOpenedCategoryIds()
+  await syncOpenedCategoryState()
   notificationStore.startPolling()
   window.addEventListener('keydown', handleGlobalKeydown)
 })
@@ -634,9 +736,13 @@ function handleProjectEdited() {
           />
 
           <el-menu
+            ref="asideMenuRef"
             :default-active="route.name === 'project-detail' ? `project-${route.params.id}` : 'dashboard'"
+            :default-openeds="defaultOpenedMenuIndexes"
             class="aside-menu"
             @select="handleMenuSelect"
+            @open="handleCategoryOpen"
+            @close="handleCategoryClose"
           >
             <el-menu-item index="dashboard">
               <el-icon><Grid /></el-icon>
