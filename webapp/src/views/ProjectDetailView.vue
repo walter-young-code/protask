@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { appMessage } from '@/utils/appMessage'
-import { Calendar, Operation, Plus, Share, User } from '@element-plus/icons-vue'
+import { Calendar, Operation, Plus, Setting, Share, User } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import * as projectApi from '@/api/project'
 import * as taskApi from '@/api/task'
@@ -36,6 +36,7 @@ import TaskDetailDialog from '@/components/TaskDetailDialog.vue'
 import MemberDialog from '@/components/MemberDialog.vue'
 import ShareDialog from '@/components/ShareDialog.vue'
 import CalendarSubscribeDialog from '@/components/CalendarSubscribeDialog.vue'
+import PropertySchemaDialog from '@/components/PropertySchemaDialog.vue'
 import { useShareStore } from '@/stores/share'
 
 const { t } = useI18n()
@@ -67,6 +68,7 @@ const detailDialogVisible = ref(false)
 const detailTask = ref<TaskVO | null>(null)
 const shareDialogVisible = ref(false)
 const calendarSubscribeDialogVisible = ref(false)
+const propertySchemaVisible = ref(false)
 
 /** 当前用户在项目中的生效角色（后端下发） */
 const myRole = () => projectStore.currentProject?.myRole
@@ -248,12 +250,19 @@ function handleHeaderCommand(command: string) {
     shareDialogVisible.value = true
   } else if (command === 'calendarSubscribe') {
     calendarSubscribeDialogVisible.value = true
+  } else if (command === 'properties') {
+    propertySchemaVisible.value = true
   }
 }
 
 function openDetail(task: TaskVO) {
   detailTask.value = task
   detailDialogVisible.value = true
+}
+
+/** 属性定义变更后刷新项目（属性模板）与任务（删除属性会级联清理属性值） */
+async function handlePropertiesChanged() {
+  await Promise.all([loadProject(), loadTasks()])
 }
 
 /** 看板拖拽换列：整体替换 properties 中的分组属性值后刷新（单选传选项 id、多选传选项 id 数组、undefined 清除） */
@@ -451,6 +460,9 @@ watch(
               <el-dropdown-item v-if="editable()" command="create" :icon="Plus">
                 {{ t('projectDetail.newTask') }}
               </el-dropdown-item>
+              <el-dropdown-item v-if="manageProperties()" command="properties" :icon="Setting">
+                {{ t('projectDetail.properties') }}
+              </el-dropdown-item>
               <el-dropdown-item v-if="adminLevel()" command="members" :icon="User">
                 {{ t('projectDetail.manageMembers') }}
               </el-dropdown-item>
@@ -504,10 +516,12 @@ watch(
       :editable="editable()"
       :card-properties="cardProperties"
       :member-map="memberMap"
+      :can-manage-properties="manageProperties()"
       @open="openDetail"
       @delete="handleDelete"
       @copy="handleCopy"
       @quick-add="openCreateDialog"
+      @property-settings="propertySchemaVisible = true"
     />
     <KanbanView
       v-else-if="activeView?.config.viewType === 'board'"
@@ -577,6 +591,14 @@ watch(
     <ShareDialog v-model="shareDialogVisible" :project-id="projectId()" />
 
     <CalendarSubscribeDialog v-model="calendarSubscribeDialogVisible" :project-id="projectId()" />
+
+    <!-- 设置属性：统一管理属性定义（重命名/改类型/选项/新增/删除） -->
+    <PropertySchemaDialog
+      v-model="propertySchemaVisible"
+      :project-id="projectId()"
+      :card-properties="cardProperties"
+      @changed="handlePropertiesChanged"
+    />
   </div>
 </template>
 

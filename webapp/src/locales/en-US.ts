@@ -12,6 +12,7 @@ export default {
     edit: 'Edit',
     delete: 'Delete',
     more: 'More',
+    close: 'Close',
   },
   message: {
     title: 'Messages',
@@ -165,6 +166,7 @@ export default {
     fallbackTitle: 'Project Detail',
     noDescription: 'No description',
     newTask: 'New Task',
+    properties: 'Properties',
     manageMembers: 'Members',
     controls: 'Controls',
     shareProject: 'Share Project',
@@ -445,6 +447,10 @@ export default {
       dueDate: 'Due Date',
     },
     builtinAdded: ' (added)',
+    settingsTitle: 'Project Properties',
+    settingsHint:
+      'Click a property name to edit it: rename, change type, edit options, or delete. Add new properties below.',
+    empty: 'No properties yet. Add one with the button below',
   },
   comment: {
     empty: 'No comments yet. Be the first to comment',

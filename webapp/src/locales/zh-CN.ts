@@ -12,6 +12,7 @@ export default {
     edit: '编辑',
     delete: '删除',
     more: '更多',
+    close: '关闭',
   },
   message: {
     title: '消息',
@@ -162,6 +163,7 @@ export default {
     fallbackTitle: '项目详情',
     noDescription: '暂无描述',
     newTask: '新建任务',
+    properties: '设置属性',
     manageMembers: '成员管理',
     controls: '控制',
     shareProject: '项目分享',
@@ -437,6 +439,9 @@ export default {
       dueDate: '截止日期',
     },
     builtinAdded: '（已添加）',
+    settingsTitle: '设置属性',
+    settingsHint: '点击属性名展开编辑：可重命名、调整类型、编辑选项，或删除与新增属性。',
+    empty: '暂无属性，点击下方按钮新增',
   },
   comment: {
     empty: '暂无评论，来发表第一条评论吧',

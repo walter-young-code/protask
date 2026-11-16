@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Setting } from '@element-plus/icons-vue'
 import { propertyDisplayText } from '@/utils/meta'
 import type { CardProperty, TaskVO } from '@/types'
 
@@ -13,6 +13,8 @@ const props = defineProps<{
   cardProperties: CardProperty[]
   /** 项目成员映射（userId -> 昵称），member 类型属性显示用 */
   memberMap?: Record<number, string>
+  /** 当前用户是否可管理属性定义（editor+） */
+  canManageProperties?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -22,6 +24,8 @@ const emit = defineEmits<{
   (e: 'copy', task: TaskVO): void
   /** 新建任务：打开创建弹窗（表格视图无分组，不预置属性） */
   (e: 'quickAdd'): void
+  /** 打开「设置属性」对话框（属性定义管理） */
+  (e: 'propertySettings'): void
 }>()
 
 const { t } = useI18n()
@@ -78,11 +82,19 @@ const { t } = useI18n()
         <el-empty :description="t('task.empty')" />
       </template>
     </el-table>
-    <!-- 底部工具栏：新建任务入口（与看板列内快捷新建一致，仅编辑者可操作） -->
+    <!-- 底部工具栏：新建任务 / 设置属性入口（仅编辑者可操作） -->
     <div v-if="editable" class="table-toolbar">
       <button class="table-add" @click="emit('quickAdd')">
         <el-icon><Plus /></el-icon>
         {{ t('projectDetail.newTask') }}
+      </button>
+      <button
+        v-if="canManageProperties"
+        class="table-add"
+        @click="emit('propertySettings')"
+      >
+        <el-icon><Setting /></el-icon>
+        {{ t('projectDetail.properties') }}
       </button>
     </div>
   </el-card>
@@ -92,6 +104,7 @@ const { t } = useI18n()
 .table-toolbar {
   display: flex;
   justify-content: center;
+  gap: 8px;
   margin-top: 12px;
 }
 

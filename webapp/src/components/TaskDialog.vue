@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import { appMessage } from '@/utils/appMessage'
 import { Plus } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import * as taskApi from '@/api/task'
-import * as projectApi from '@/api/project'
-import { CUSTOM_PROPERTY_TYPES, BUILTIN_PROPERTIES, createPropertyId } from '@/utils/meta'
+import { CUSTOM_PROPERTY_TYPES, BUILTIN_PROPERTIES } from '@/utils/meta'
+import { usePropertySchema } from '@/composables/usePropertySchema'
 import PropertyMenu from '@/components/PropertyMenu.vue'
 import PropertyValueInput from '@/components/PropertyValueInput.vue'
 import IconPicker from '@/components/IconPicker.vue'
-import type { CardProperty, CustomPropertyType, TaskVO } from '@/types'
+import type { CardProperty, TaskVO } from '@/types'
 
 const { t } = useI18n()
 
@@ -39,8 +39,6 @@ const emit = defineEmits<{
 const formRef = ref<FormInstance>()
 const loading = ref(false)
 const isEdit = computed(() => props.task !== null)
-/** 刚新增的属性 ID：自动展开其管理菜单便于改名（参照 Focalboard newTemplateId） */
-const newPropertyId = ref('')
 
 const form = reactive({
   title: '',
@@ -92,94 +90,19 @@ watch(
   },
 )
 
-// ---------- 属性模板管理（本弹窗为唯一入口，对齐 Focalboard cardDetailProperties） ----------
+// ---------- 属性模板管理（与「设置属性」对话框共用同一套定义管理逻辑） ----------
 
-/** 保存属性模板（整体替换） */
-async function saveProperties(template: CardProperty[], notify = true) {
-  await projectApi.updateCardProperties(props.projectId, template)
-  if (notify) {
-    appMessage.success(t('property.saved'))
-  }
-  emit('properties-changed')
-}
-
-/** 属性定义变更：改类型需确认（旧值可能无法匹配新类型） */
-async function handlePropertyChange(updated: CardProperty) {
-  const template = props.cardProperties ?? []
-  const old = template.find((p) => p.id === updated.id)
-  if (old && old.type !== updated.type) {
-    try {
-      await ElMessageBox.confirm(
-        t('property.typeChangeConfirm', { name: old.name }),
-        t('property.typeChangeTitle'),
-        {
-          type: 'warning',
-          confirmButtonText: t('property.typeChangeAction'),
-          cancelButtonText: t('common.cancel'),
-        },
-      )
-    } catch {
-      return
-    }
-  }
-  await saveProperties(template.map((p) => (p.id === updated.id ? updated : p)))
-}
-
-/** 新增属性：以类型默认名创建并立即保存，同时展开其菜单便于改名 */
-function handlePropertyAdd(type: CustomPropertyType) {
-  const prop: CardProperty = {
-    id: createPropertyId(),
-    name: t(`propertyType.${type}`),
-    type,
-    options:
-      type === 'select' || type === 'multiSelect'
-        ? [{ id: createPropertyId(), value: t('property.defaultOption') }]
-        : undefined,
-  }
-  newPropertyId.value = prop.id
-  void saveProperties([...(props.cardProperties ?? []), prop])
-}
-
-/** 内置属性是否已存在于模板中（避免重复添加） */
-function builtinAdded(prop: CardProperty): boolean {
-  return (props.cardProperties ?? []).some((p) => p.id === prop.id)
-}
-
-/** 一键添加内置属性：选项已预配，已存在则跳过 */
-async function handleAddBuiltinProperty(prop: CardProperty) {
-  if (builtinAdded(prop)) return
-  await saveProperties([...(props.cardProperties ?? []), prop])
-}
-
-/** 添加属性下拉回调（模板表达式不支持 TS 断言，经脚本中转） */
-function handleAddPropertyCommand(command: string) {
-  const builtin = BUILTIN_PROPERTIES.find((p) => `builtin:${p.id}` === command)
-  if (builtin) {
-    void handleAddBuiltinProperty(builtin)
-    return
-  }
-  handlePropertyAdd(command as CustomPropertyType)
-}
-
-/** 删除属性：确认后从模板移除，后端级联清理全部卡片上的对应值 */
-async function handlePropertyDelete(prop: CardProperty) {
-  try {
-    await ElMessageBox.confirm(
-      t('property.deleteConfirmSubtext', { name: prop.name }),
-      t('property.deleteConfirmTitle'),
-      {
-        type: 'warning',
-        confirmButtonText: t('common.delete'),
-        cancelButtonText: t('common.cancel'),
-      },
-    )
-  } catch {
-    return
-  }
-  await saveProperties((props.cardProperties ?? []).filter((p) => p.id !== prop.id), false)
-  delete form.propertyValues[prop.id]
-  appMessage.success(t('property.deleted', { name: prop.name }))
-}
+/** 刚新增的属性 ID：自动展开其管理菜单便于改名（参照 Focalboard newTemplateId） */
+const { newPropertyId, changeProperty, builtinAdded, addPropertyCommand, deleteProperty } =
+  usePropertySchema({
+    projectId: () => props.projectId,
+    template: () => props.cardProperties ?? [],
+    changed: () => emit('properties-changed'),
+    // 删除属性后同步清理表单中该属性的值
+    onDeleted: (prop) => {
+      delete form.propertyValues[prop.id]
+    },
+  })
 
 function close() {
   emit('update:modelValue', false)
@@ -254,8 +177,8 @@ async function handleSubmit() {
             v-if="props.canManageProperties"
             :property="prop"
             :initial-open="newPropertyId === prop.id"
-            @change="handlePropertyChange"
-            @delete="handlePropertyDelete(prop)"
+            @change="changeProperty"
+            @delete="deleteProperty(prop)"
           />
           <span v-else>{{ prop.name }}</span>
         </template>
@@ -268,7 +191,7 @@ async function handleSubmit() {
       </el-form-item>
       <!-- 添加属性（仅可管理属性定义时显示） -->
       <el-form-item v-if="props.canManageProperties" label=" ">
-        <el-dropdown trigger="click" @command="handleAddPropertyCommand">
+        <el-dropdown trigger="click" @command="addPropertyCommand">
           <el-button link type="primary" size="small" :icon="Plus">
             {{ t('property.add') }}
           </el-button>
