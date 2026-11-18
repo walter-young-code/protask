@@ -384,6 +384,8 @@ export default {
     startColumn: 'Start',
     dueColumn: 'Due',
     resizeTaskCol: 'Drag to resize the task column; double-click to reset',
+    datesToggle: 'Duration',
+    datesToggleHint: 'Show/hide the duration, start and due date columns as a group',
     durationDays: '{count} d',
     empty: 'No scheduled tasks yet. Set start/due dates on tasks to show bars here.',
     noDateProperty: 'Schedule fields missing: add start date and due date in "Project Properties" (they are bound automatically when WBS code is added)',

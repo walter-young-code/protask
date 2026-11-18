@@ -378,6 +378,8 @@ export default {
     startColumn: '开始时间',
     dueColumn: '截止时间',
     resizeTaskCol: '拖动调整任务列宽，双击恢复默认',
+    datesToggle: '工期',
+    datesToggleHint: '整体隐藏/展示工期、开始日期、截止日期列',
     durationDays: '{count} 天',
     empty: '暂无已排期任务。为任务设置开始/截止日期后即可在此展示条体。',
     noDateProperty: '缺少排期字段：请在「设置属性」中添加开始日期与截止日期（添加 WBS 编码时会自动绑定）',

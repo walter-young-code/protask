@@ -15,6 +15,8 @@ export const HEADER_HEIGHT = 48
 export const MONTH_ROW_HEIGHT = 24
 /** 左表固定列总宽（内边距 16 + 展开 18 + 列隙 24 + WBS 40 + 工期 48 + 起/止 76×2，与 GanttView CSS 同步） */
 export const LEFT_FIXED_WIDTH = 298
+/** 工期/开始/截止列模块整体宽（48 + 76×2 + 3 个列隙×4，工具栏「工期」按钮整体隐藏） */
+export const DATE_MODULE_WIDTH = 48 + 76 * 2 + 4 * 3
 /** 任务列默认宽度（表头分隔条可拖拽调整） */
 export const TASK_COL_DEFAULT_WIDTH = 132
 /** 任务列拖拽下限（保证省略号截断仍可读） */

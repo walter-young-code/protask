@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, Download, Plus, ZoomIn } from '@element-plus/icons-vue'
+import { Calendar, Check, Download, Plus, ZoomIn } from '@element-plus/icons-vue'
 import type { CardProperty, DependencyVO, GanttScale, TaskVO } from '@/types'
 import { DUE_DATE_PROPERTY_ID, START_DATE_PROPERTY_ID, hasScheduleProperties } from '@/utils/meta'
 import { buildTaskTree, flattenTree, type TaskTreeNode } from '@/utils/taskTree'
@@ -9,6 +9,7 @@ import {
   BAR_CONNECTOR_OFFSET,
   BAR_CONNECTOR_RADIUS,
   BAR_HEIGHT,
+  DATE_MODULE_WIDTH,
   HEADER_HEIGHT,
   LEFT_FIXED_WIDTH,
   MONTH_ROW_HEIGHT,
@@ -218,8 +219,14 @@ function initialColWidth(): number {
 }
 const taskColWidth = ref(initialColWidth())
 const colResizing = ref(false)
-/** 左表总宽 = 固定列 + 任务列（拖拽只改变任务列） */
-const leftWidth = computed(() => LEFT_FIXED_WIDTH + taskColWidth.value)
+/** 工期/开始/截止列模块整体显隐（工具栏「工期」按钮，偏好本地记忆） */
+const DATES_STORAGE_KEY = 'protask_gantt_show_date_cols'
+const showDateCols = ref(localStorage.getItem(DATES_STORAGE_KEY) !== '0')
+watch(showDateCols, (v) => localStorage.setItem(DATES_STORAGE_KEY, v ? '1' : '0'))
+/** 左表总宽 = 固定列 + 任务列（拖拽只改变任务列；日期模块隐藏时整体扣减） */
+const leftWidth = computed(
+  () => LEFT_FIXED_WIDTH + taskColWidth.value - (showDateCols.value ? 0 : DATE_MODULE_WIDTH),
+)
 /** 任务列右边界（分隔条/列参考线定位，相对左表） */
 const colBoundaryX = computed(() => TASK_COL_BOUNDARY_OFFSET + taskColWidth.value)
 watch(taskColWidth, (w) => localStorage.setItem(COL_WIDTH_STORAGE_KEY, String(w)))
@@ -496,6 +503,16 @@ onBeforeUnmount(() => {
           <el-button size="small" :icon="ZoomIn" @click="scrollToToday">
             {{ t('gantt.today') }}
           </el-button>
+
+          <el-button
+            size="small"
+            :icon="Calendar"
+            :type="showDateCols ? 'primary' : 'default'"
+            :title="t('gantt.datesToggleHint')"
+            @click="showDateCols = !showDateCols"
+          >
+            {{ t('gantt.datesToggle') }}
+          </el-button>
         </div>
 
         <div class="gantt-toolbar-right">
@@ -544,9 +561,11 @@ onBeforeUnmount(() => {
               @mousedown="beginColResize"
               @dblclick="resetColWidth"
             />
-            <span class="corner-duration">{{ t('gantt.durationColumn') }}</span>
-            <span class="corner-start">{{ t('gantt.startColumn') }}</span>
-            <span class="corner-due">{{ t('gantt.dueColumn') }}</span>
+            <template v-if="showDateCols">
+              <span class="corner-duration">{{ t('gantt.durationColumn') }}</span>
+              <span class="corner-start">{{ t('gantt.startColumn') }}</span>
+              <span class="corner-due">{{ t('gantt.dueColumn') }}</span>
+            </template>
           </div>
 
           <!-- 右上时间轴表头 -->
@@ -610,9 +629,11 @@ onBeforeUnmount(() => {
                 <span v-if="entry.row.icon" class="row-icon">{{ entry.row.icon }}</span>
                 <span class="row-title-text" :class="{ 'is-summary': entry.row.children.length > 0 }" :title="entry.row.title">{{ entry.row.title }}</span>
               </span>
-              <span class="row-duration">{{ entry.duration != null ? t('gantt.durationDays', { count: entry.duration }) : '—' }}</span>
-              <span class="row-date">{{ entry.start }}</span>
-              <span class="row-date">{{ entry.due }}</span>
+              <template v-if="showDateCols">
+                <span class="row-duration">{{ entry.duration != null ? t('gantt.durationDays', { count: entry.duration }) : '—' }}</span>
+                <span class="row-date">{{ entry.start }}</span>
+                <span class="row-date">{{ entry.due }}</span>
+              </template>
             </div>
           </div>
 
