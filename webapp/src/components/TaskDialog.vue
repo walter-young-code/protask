@@ -5,7 +5,8 @@ import { appMessage } from '@/utils/appMessage'
 import { Plus } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import * as taskApi from '@/api/task'
-import { CUSTOM_PROPERTY_TYPES, BUILTIN_PROPERTIES } from '@/utils/meta'
+import { CUSTOM_PROPERTY_TYPES, BUILTIN_PROPERTIES, WBS_PROPERTY_ID, START_DATE_PROPERTY_ID, isGanttRequiredProperty } from '@/utils/meta'
+import { buildParentOptions } from '@/utils/taskTree'
 import { usePropertySchema } from '@/composables/usePropertySchema'
 import PropertyMenu from '@/components/PropertyMenu.vue'
 import PropertyValueInput from '@/components/PropertyValueInput.vue'
@@ -27,6 +28,10 @@ const props = defineProps<{
   initialProperties?: Record<string, unknown>
   /** 项目成员映射（userId -> 昵称），member 类型属性的选项来源 */
   memberMap?: Record<number, string>
+  /** 项目全量任务（父任务选择候选来源，仅 WBS 项目用） */
+  tasks?: TaskVO[]
+  /** WBS 门禁：项目是否添加了 WBS 编码属性 */
+  hasWbs?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -45,9 +50,32 @@ const form = reactive({
   description: '',
   /** 任务图标（emoji，空串表示无图标） */
   icon: '',
+  /** 父任务 ID（null=根任务，仅 WBS 项目生效） */
+  parentTaskId: null as number | null,
   /** 动态属性值（按项目 cardProperties 模板渲染） */
   propertyValues: {} as Record<string, unknown>,
 })
+
+/** 父任务候选（排除自身与子孙防环，带深度缩进） */
+const parentOptions = computed(() => buildParentOptions(props.tasks ?? [], props.task?.id))
+
+/** 父任务下拉值：0 代表「无父任务」（ElOption 不接受 null），与表单 null 双向映射 */
+const parentSelectValue = computed<number>({
+  get: () => form.parentTaskId ?? 0,
+  set: (v) => {
+    form.parentTaskId = v ? v : null
+  },
+})
+
+/** 可编辑的动态属性（排除只读 WBS 编码） */
+const editableProperties = computed(() =>
+  (props.cardProperties ?? []).filter((p) => p.id !== WBS_PROPERTY_ID),
+)
+
+/** 可添加的内置属性：开始日期仅 WBS 项目提供 */
+const availableBuiltins = computed(() =>
+  BUILTIN_PROPERTIES.filter((p) => p.id !== START_DATE_PROPERTY_ID || props.hasWbs),
+)
 
 const rules = computed<FormRules>(() => ({
   title: [
@@ -66,10 +94,12 @@ watch(
       form.title = props.task.title
       form.description = props.task.description || ''
       form.icon = props.task.icon ?? ''
+      form.parentTaskId = props.task.parentTaskId ?? null
     } else {
       form.title = ''
       form.description = ''
       form.icon = ''
+      form.parentTaskId = null
     }
     form.propertyValues = {}
     for (const prop of props.cardProperties ?? []) {
@@ -128,8 +158,14 @@ async function handleSubmit() {
       icon: form.icon,
       description: form.description || undefined,
       properties: Object.fromEntries(
-        Object.entries(form.propertyValues).filter(([, value]) => !isEmptyValue(value)),
+        Object.entries(form.propertyValues).filter(
+          ([id, value]) => id !== WBS_PROPERTY_ID && !isEmptyValue(value),
+        ),
       ),
+      // 父任务语义：创建 null=根；更新 null→0(设根)、其余=指定父（仅 WBS 项目下发）
+      ...(props.hasWbs
+        ? { parentTaskId: isEdit.value ? (form.parentTaskId ?? 0) : form.parentTaskId }
+        : {}),
     }
     if (isEdit.value && props.task) {
       await taskApi.updateTask(props.task.id, payload)
@@ -170,13 +206,42 @@ async function handleSubmit() {
           :placeholder="t('task.descriptionPlaceholder')"
         />
       </el-form-item>
+      <!-- WBS 项目：父任务选择（排除自身与子孙防环） -->
+      <el-form-item v-if="props.hasWbs" :label="t('task.parentLabel')">
+        <el-select
+          v-model="parentSelectValue"
+          clearable
+          filterable
+          :placeholder="t('task.parentNone')"
+          class="parent-select"
+        >
+          <el-option :value="0" :label="t('task.parentNone')" />
+          <el-option
+            v-for="opt in parentOptions"
+            :key="opt.id"
+            :value="opt.id"
+            :label="(opt.wbs ? opt.wbs + ' ' : '') + opt.title"
+          >
+            <span :style="{ paddingLeft: `${opt.depth * 14}px` }">
+              <span class="parent-wbs">{{ opt.wbs }}</span> {{ opt.title }}
+            </span>
+          </el-option>
+        </el-select>
+        <span class="parent-hint">{{ t('task.parentHint') }}</span>
+      </el-form-item>
+      <!-- WBS 编码只读展示（编辑态，后端树序自动编号） -->
+      <el-form-item v-if="props.hasWbs && isEdit && props.task?.wbs" :label="t('gantt.wbsColumn')">
+        <span class="wbs-readonly">{{ props.task.wbs }}</span>
+        <span class="parent-hint">{{ t('task.wbsReadonly') }}</span>
+      </el-form-item>
       <!-- 动态属性：可管理时属性名挂载管理菜单（本弹窗为属性管理唯一入口） -->
-      <el-form-item v-for="prop in props.cardProperties ?? []" :key="prop.id">
+      <el-form-item v-for="prop in editableProperties" :key="prop.id">
         <template #label>
           <PropertyMenu
             v-if="props.canManageProperties"
             :property="prop"
             :initial-open="newPropertyId === prop.id"
+            :delete-disabled="Boolean(props.hasWbs) && isGanttRequiredProperty(prop.id)"
             @change="changeProperty"
             @delete="deleteProperty(prop)"
           />
@@ -206,7 +271,7 @@ async function handleSubmit() {
               </el-dropdown-item>
               <!-- 内置属性：选项已预配，一键添加（已存在时置灰） -->
               <el-dropdown-item
-                v-for="prop in BUILTIN_PROPERTIES"
+                v-for="prop in availableBuiltins"
                 :key="prop.id"
                 divided
                 :disabled="builtinAdded(prop)"
@@ -232,6 +297,31 @@ async function handleSubmit() {
   margin-left: 8px;
   font-size: 12px;
   color: var(--app-text-secondary);
+}
+
+.parent-select {
+  width: 100%;
+}
+
+.parent-wbs {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  margin-right: 4px;
+}
+
+.parent-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--app-text-placeholder);
+  line-height: 1.4;
+}
+
+.wbs-readonly {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--app-text-regular);
 }
 
 /* 字段名称加宽后，输入框限定宽度（右侧留白，避免过长） */

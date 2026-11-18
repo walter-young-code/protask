@@ -91,6 +91,7 @@ public class ProjectService {
     private final UserMapper userMapper;
     private final PermissionService permissionService;
     private final BlockService blockService;
+    private final GanttProjectService ganttProjectService;
     private final AttachmentService attachmentService;
     private final NotificationMapper notificationMapper;
 
@@ -236,7 +237,8 @@ public class ProjectService {
         member.setRole(ProjectRole.ADMIN.getValue());
         projectMemberMapper.insert(member);
 
-        blockService.copyBlocksFromProject(request.getTemplateId(), project.getId(), userId);
+        Map<Long, Long> templateMapping = blockService.copyBlocksFromProject(request.getTemplateId(), project.getId(), userId);
+        ganttProjectService.copyDependencies(request.getTemplateId(), project.getId(), templateMapping);
         return getProject(userId, project.getId());
     }
 
@@ -265,7 +267,8 @@ public class ProjectService {
         template.setModifiedBy(userId);
         template.setStatus("active");
         projectMapper.insert(template);
-        blockService.copyBlocksFromProject(projectId, template.getId(), userId);
+        Map<Long, Long> templateMapping = blockService.copyBlocksFromProject(projectId, template.getId(), userId);
+        ganttProjectService.copyDependencies(projectId, template.getId(), templateMapping);
         return toTemplateVO(template);
     }
 
@@ -307,6 +310,7 @@ public class ProjectService {
         projectMemberMapper.insert(member);
 
         Map<Long, Long> idMapping = blockService.copyBlocksFromProject(projectId, copy.getId(), userId);
+        ganttProjectService.copyDependencies(projectId, copy.getId(), idMapping);
         remapDefaultView(copy, idMapping, userId);
         return getProject(userId, copy.getId());
     }
@@ -706,6 +710,10 @@ public class ProjectService {
                 .map(CardPropertiesRequest.CardPropertyDef::getId)
                 .filter(id -> !newIds.contains(id))
                 .collect(Collectors.toList());
+        // 启用甘特（含 WBS）的项目禁止删除必要字段（WBS/开始日期/截止日期）
+        ganttProjectService.requireRequiredFieldsKept(project, deletedIds);
+        // 启用绑定：新模板含 WBS 时自动补齐开始/截止日期属性
+        properties = ganttProjectService.ensureScheduleFields(properties);
         if (!deletedIds.isEmpty()) {
             blockService.removePropertyFromCards(projectId, deletedIds, userId);
         }

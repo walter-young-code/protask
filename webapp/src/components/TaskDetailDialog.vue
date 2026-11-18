@@ -2,7 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { appMessage } from '@/utils/appMessage'
-import { CopyDocument, Delete, Document, Download, MoreFilled, Position, Upload, View } from '@element-plus/icons-vue'
+import { Check, CopyDocument, Delete, Document, Download, MoreFilled, Position, Upload, View } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -13,6 +13,8 @@ import type { AttachmentVO } from '@/api/attachment'
 import { useSiteStore } from '@/stores/site'
 import PropertyValueInput from '@/components/PropertyValueInput.vue'
 import IconPicker from '@/components/IconPicker.vue'
+import { WBS_PROPERTY_ID, START_DATE_PROPERTY_ID, DUE_DATE_PROPERTY_ID } from '@/utils/meta'
+import { buildParentOptions } from '@/utils/taskTree'
 import type { BlockVO, CardProperty, ProjectMemberVO, TaskVO } from '@/types'
 
 const props = defineProps<{
@@ -31,6 +33,10 @@ const props = defineProps<{
   memberMap?: Record<number, string>
   /** 项目成员列表（评论 @提及的候选来源，即成员管理中加入的成员） */
   members?: ProjectMemberVO[]
+  /** 项目全量任务（父任务选择候选来源，仅 WBS 项目用） */
+  tasks?: TaskVO[]
+  /** WBS 门禁：项目是否添加了 WBS 编码属性 */
+  hasWbs?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -52,9 +58,39 @@ const form = reactive({
   description: '',
   /** 任务图标（emoji，空串表示无图标） */
   icon: '',
+  /** 父任务 ID（null=根任务，仅 WBS 项目生效） */
+  parentTaskId: null as number | null,
+  /** 里程碑标记（仅 WBS 项目展示开关） */
+  milestone: false,
   /** 动态属性值（按项目 cardProperties 模板全量渲染） */
   propertyValues: {} as Record<string, unknown>,
 })
+
+/** 父任务候选（排除自身与子孙防环，带深度缩进） */
+const parentOptions = computed(() => buildParentOptions(props.tasks ?? [], props.task?.id))
+
+/** 里程碑开关禁用原因：摘要任务或起止非同日（未排期/跨日）；空串=可用 */
+const milestoneDisabledReason = computed(() => {
+  if ((props.task?.childCount ?? 0) > 0) return t('task.milestoneSummaryHint')
+  const s = props.task?.properties?.[START_DATE_PROPERTY_ID]
+  const e = props.task?.properties?.[DUE_DATE_PROPERTY_ID]
+  const sameDay =
+    typeof s === 'string' && typeof e === 'string' && s.length >= 10 && s.slice(0, 10) === e.slice(0, 10)
+  return sameDay ? '' : t('task.milestoneSameDayHint')
+})
+
+/** 父任务下拉值：0 代表「无父任务」（ElOption 不接受 null），与表单 null 双向映射 */
+const parentSelectValue = computed<number>({
+  get: () => form.parentTaskId ?? 0,
+  set: (v) => {
+    form.parentTaskId = v ? v : null
+  },
+})
+
+/** 可编辑的动态属性（排除只读 WBS 编码） */
+const editableProperties = computed(() =>
+  (props.cardProperties ?? []).filter((p) => p.id !== WBS_PROPERTY_ID),
+)
 
 /** 描述编辑/预览模式（默认预览，双击预览区进入编辑） */
 const descMode = ref<'edit' | 'preview'>('preview')
@@ -263,11 +299,23 @@ const initialSnapshot = ref('')
 
 /** 表单当前状态序列化（标题/描述/属性值任一变化都会改变快照） */
 function snapshotForm(): string {
-  return JSON.stringify({ title: form.title, icon: form.icon, description: form.description, propertyValues: form.propertyValues })
+  return JSON.stringify({ title: form.title, icon: form.icon, description: form.description, parentTaskId: form.parentTaskId, milestone: form.milestone, propertyValues: form.propertyValues })
 }
 
 /** 是否有未保存修改（预览模式下改动标题/属性后据此显示保存按钮） */
 const formDirty = computed(() => snapshotForm() !== initialSnapshot.value)
+
+/** 标题输入框自适应宽度：WBS 前缀紧贴名称、整组居中（按 20px/600 字体实测） */
+const titleMeasureCtx = (() => {
+  const ctx = document.createElement('canvas').getContext('2d')
+  if (ctx) ctx.font = '600 20px sans-serif'
+  return ctx
+})()
+const titleInputWidth = computed(() => {
+  if (!titleMeasureCtx) return 240
+  const text = form.title || t('task.titlePlaceholder')
+  return Math.min(640, Math.max(96, Math.ceil(titleMeasureCtx.measureText(text).width) + 24))
+})
 
 /** Markdown 工具条动作定义 */
 interface MarkdownAction {
@@ -418,6 +466,8 @@ function initForm() {
   form.title = props.task.title
   form.description = props.task.description || ''
   form.icon = props.task.icon ?? ''
+  form.parentTaskId = props.task.parentTaskId ?? null
+  form.milestone = props.task.milestone ?? false
   form.propertyValues = {}
   for (const prop of props.cardProperties ?? []) {
     form.propertyValues[prop.id] = props.task.properties?.[prop.id] ?? ''
@@ -535,8 +585,13 @@ async function handleSave() {
       icon: form.icon,
       description: form.description || undefined,
       properties: Object.fromEntries(
-        Object.entries(form.propertyValues).filter(([, value]) => !isEmptyValue(value)),
+        Object.entries(form.propertyValues).filter(
+          ([id, value]) => id !== WBS_PROPERTY_ID && !isEmptyValue(value),
+        ),
       ),
+      // 父任务语义：更新 null→0(设根)、其余=指定父（仅 WBS 项目下发）
+      ...(props.hasWbs ? { parentTaskId: form.parentTaskId ?? 0 } : {}),
+      milestone: form.milestone,
     })
     initialSnapshot.value = snapshotForm() // 保存成功后重拍快照，未保存标记复位
     appMessage.success(t('task.updated'))
@@ -585,7 +640,19 @@ function handleHeaderCommand(command: string) {
     void handleCopyTask()
   } else if (command === 'delete') {
     void handleDeleteTask()
+  } else if (command === 'typeNormal') {
+    selectMilestoneType(false)
+  } else if (command === 'typeMilestone') {
+    selectMilestoneType(true)
   }
+}
+
+/** 「更多」菜单切换任务类型（与甘特几何体点击菜单同语义）：无变化不请求，非同日禁设里程碑 */
+function selectMilestoneType(milestone: boolean) {
+  if (milestone && milestoneDisabledReason.value) return
+  if (form.milestone === milestone) return
+  form.milestone = milestone
+  void handleSave()
 }
 
 async function handleSubmitComment() {
@@ -797,6 +864,17 @@ function formatTime(value?: string) {
               >
                 {{ t('common.delete') }}
               </el-dropdown-item>
+              <!-- WBS 项目：任务类型切换（与甘特条体点击菜单同语义），当前项勾选 -->
+              <template v-if="props.hasWbs">
+                <el-dropdown-item command="typeNormal" divided>
+                  <el-icon class="detail-type-check" :class="{ invisible: form.milestone === true }"><Check /></el-icon>
+                  {{ t('gantt.typeNormal') }}
+                </el-dropdown-item>
+                <el-dropdown-item command="typeMilestone" :disabled="milestoneDisabledReason !== ''">
+                  <el-icon class="detail-type-check" :class="{ invisible: form.milestone !== true }"><Check /></el-icon>
+                  <span :title="milestoneDisabledReason || undefined">{{ t('gantt.typeMilestone') }}</span>
+                </el-dropdown-item>
+              </template>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -807,16 +885,25 @@ function formatTime(value?: string) {
       <!-- 标题与描述 -->
       <div class="detail-title-row">
         <IconPicker v-model="form.icon" :readonly="!editable" addable />
-        <el-input
-          v-if="editable"
-          v-model="form.title"
-          class="detail-title"
-          size="large"
-          maxlength="200"
-          :placeholder="t('task.titlePlaceholder')"
-          @keydown.enter="handleTitleEnter"
-        />
-        <h3 v-else class="detail-title-readonly">{{ task.title }}</h3>
+        <div class="detail-title-group">
+          <!-- WBS 编码前缀于任务名称（树序自动编号、只读），不再单独占属性行 -->
+          <span
+            v-if="props.hasWbs && task.wbs"
+            class="detail-wbs-prefix"
+            :title="t('task.wbsReadonly')"
+          >{{ task.wbs }}</span>
+          <el-input
+            v-if="editable"
+            v-model="form.title"
+            class="detail-title"
+            :style="{ width: `${titleInputWidth}px` }"
+            size="large"
+            maxlength="200"
+            :placeholder="t('task.titlePlaceholder')"
+            @keydown.enter="handleTitleEnter"
+          />
+          <h3 v-else class="detail-title-readonly">{{ task.title }}</h3>
+        </div>
       </div>
 
       <!-- 属性区：单列布局（参照 Focalboard 属性行：名称固定宽 + 值）；回车即保存 -->
@@ -826,8 +913,31 @@ function formatTime(value?: string) {
         :disabled="!editable"
         @keydown.enter="handlePropertyEnter"
       >
+        <!-- WBS 项目：父任务选择（排除自身与子孙防环），选中即保存 -->
+        <el-form-item v-if="props.hasWbs" :label="t('task.parentLabel')" class="property-item">
+          <el-select
+            v-model="parentSelectValue"
+            clearable
+            filterable
+            :placeholder="t('task.parentNone')"
+            class="parent-select"
+            @change="handleSave"
+          >
+            <el-option :value="0" :label="t('task.parentNone')" />
+            <el-option
+              v-for="opt in parentOptions"
+              :key="opt.id"
+              :value="opt.id"
+              :label="(opt.wbs ? opt.wbs + ' ' : '') + opt.title"
+            >
+              <span :style="{ paddingLeft: `${opt.depth * 14}px` }">
+                <span class="parent-wbs">{{ opt.wbs }}</span> {{ opt.title }}
+              </span>
+            </el-option>
+          </el-select>
+        </el-form-item>
         <el-form-item
-          v-for="prop in props.cardProperties ?? []"
+          v-for="prop in editableProperties"
           :key="prop.id"
           :label="prop.name"
           class="property-item"
@@ -840,7 +950,7 @@ function formatTime(value?: string) {
           />
         </el-form-item>
         <el-empty
-          v-if="(props.cardProperties ?? []).length === 0"
+          v-if="editableProperties.length === 0 && !props.hasWbs"
           :description="t('taskDetail.noProperties')"
           :image-size="40"
         />
@@ -1137,6 +1247,14 @@ function formatTime(value?: string) {
   color: var(--el-color-primary);
 }
 
+.detail-type-check {
+  margin-right: 6px;
+}
+
+.detail-type-check.invisible {
+  visibility: hidden;
+}
+
 .detail-title-row {
   display: flex;
   align-items: center;
@@ -1145,8 +1263,19 @@ function formatTime(value?: string) {
   margin-bottom: 12px;
 }
 
+/* 标题组：WBS 前缀 + 名称整体居中，前缀紧贴名称 */
+.detail-title-group {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
 .detail-title {
   margin-bottom: 0;
+  max-width: 100%;
 }
 
 .detail-title :deep(.el-input__wrapper) {
@@ -1169,16 +1298,42 @@ function formatTime(value?: string) {
 }
 
 .detail-title-readonly {
-  margin: 0 0 12px;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 20px;
   font-weight: 600;
   text-align: center;
+}
+
+/* WBS 前缀徽标：任务名称前的只读编号，悬停提示自动编号语义 */
+.detail-wbs-prefix {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+  color: var(--app-text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 /* 属性区：无边框控件，hover/聚焦浅色背景反馈；底部分隔线与描述区隔开 */
 .property-form {
   border-bottom: 1px solid var(--app-border-light);
   padding-bottom: 16px;
+}
+
+.parent-select {
+  width: 100%;
+  max-width: 340px;
+}
+
+.parent-wbs {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  margin-right: 4px;
 }
 
 .property-form :deep(.el-input__wrapper),

@@ -91,6 +91,42 @@ describe('parseViewConfig', () => {
     const config = parseViewConfig({ viewType: 'board', cardPropertyIds: ['env', 42, 'due', null] })
     expect(config.cardPropertyIds).toEqual(['env', 'due'])
   })
+
+  it('gantt 为合法视图类型（WBS 项目专属第 5 种视图）', () => {
+    expect(parseViewConfig({ viewType: 'gantt' }).viewType).toBe('gantt')
+  })
+
+  it('ganttScale 仅接受 day/week/month，非法值回退 undefined', () => {
+    expect(parseViewConfig({ viewType: 'gantt', ganttScale: 'day' }).ganttScale).toBe('day')
+    expect(parseViewConfig({ viewType: 'gantt', ganttScale: 'week' }).ganttScale).toBe('week')
+    expect(parseViewConfig({ viewType: 'gantt', ganttScale: 'month' }).ganttScale).toBe('month')
+    expect(parseViewConfig({ viewType: 'gantt', ganttScale: 'year' }).ganttScale).toBeUndefined()
+  })
+
+  it('解析 showWbs（类型不符时回退 undefined），历史 startDateId/dueDateId 字段不再解析', () => {
+    const config = parseViewConfig({
+      viewType: 'gantt',
+      showWbs: false,
+      startDateId: 'startDate',
+      dueDateId: 'dueDate',
+    })
+    expect(config.showWbs).toBe(false)
+    // 甘特排期已固定绑定内置日期字段，旧视图配置中的选择值忽略
+    expect(config).not.toHaveProperty('startDateId')
+    expect(config).not.toHaveProperty('dueDateId')
+    expect(parseViewConfig({ showWbs: 'yes' }).showWbs).toBeUndefined()
+  })
+
+  it('甘特配置序列化与解析互逆', () => {
+    const config = {
+      viewType: 'gantt' as const,
+      filters: [],
+      sorts: [],
+      showWbs: true,
+      ganttScale: 'month' as const,
+    }
+    expect(parseViewConfig(toViewFields(config))).toEqual(config)
+  })
 })
 
 describe('applyFilters', () => {

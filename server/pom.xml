@@ -90,6 +90,13 @@
             <version>${aliyun-oss.version}</version>
         </dependency>
 
+        <!-- MS Project 导出：MPXJ 生成 MSPDI(.xml)，MS Project 可直接打开另存 .mpp -->
+        <dependency>
+            <groupId>net.sf.mpxj</groupId>
+            <artifactId>mpxj</artifactId>
+            <version>13.12.0</version>
+        </dependency>
+
         <!-- Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>

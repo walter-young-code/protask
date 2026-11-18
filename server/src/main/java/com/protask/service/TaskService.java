@@ -79,25 +79,83 @@ public class TaskService {
     private final UserMapper userMapper;
     private final AttachmentMapper attachmentMapper;
     private final PermissionService permissionService;
+    private final GanttProjectService ganttProjectService;
 
     /**
      * 查询项目下的任务列表（需查看权限）。
+     * WBS 项目按树序返回并附 WBS 编码/子任务数；非 WBS 项目保持创建时间倒序的扁平列表。
      */
     public List<TaskVO> listTasks(Long userId, Long projectId) {
         checkProjectExists(projectId);
         permissionService.checkPermission(userId, projectId, ProjectPermission.VIEW_PROJECT);
-        List<Block> cards = blockMapper.selectList(new LambdaQueryWrapper<Block>()
-                .eq(Block::getProjectId, projectId)
-                .eq(Block::getType, BlockTypes.CARD)
-                .isNull(Block::getDeleteAt)
-                .orderByDesc(Block::getCreateAt));
+        boolean wbsEnabled = ganttProjectService.hasWbs(projectId);
+        List<Block> cards;
+        GanttProjectService.TaskTree tree = null;
+        if (wbsEnabled) {
+            tree = ganttProjectService.buildTree(projectId);
+            cards = tree.ordered();
+        } else {
+            cards = blockMapper.selectList(new LambdaQueryWrapper<Block>()
+                    .eq(Block::getProjectId, projectId)
+                    .eq(Block::getType, BlockTypes.CARD)
+                    .isNull(Block::getDeleteAt)
+                    .orderByDesc(Block::getCreateAt));
+        }
         Map<Long, String> nicknames = nicknameMap(cards);
         Map<Long, Long> attachmentCounts = attachmentCountMap(cards.stream().map(Block::getId).toList());
         List<TaskVO> vos = new ArrayList<>();
         for (Block card : cards) {
-            vos.add(toVO(card, nicknames, attachmentCounts.getOrDefault(card.getId(), 0L)));
+            TaskVO vo = toVO(card, nicknames, attachmentCounts.getOrDefault(card.getId(), 0L));
+            if (wbsEnabled && tree != null) {
+                vo.setParentTaskId(card.getParentTaskId());
+                vo.setWbs(tree.wbs().get(card.getId()));
+                vo.setChildCount(tree.childCount().getOrDefault(card.getId(), 0));
+            }
+            vos.add(vo);
         }
         return vos;
+    }
+
+    /**
+     * 同级重排（上移/下移）：仅 WBS 项目；先归一化同级序号再交换位置，WBS 随树序重编号。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void moveTask(Long userId, Long taskId, String direction) {
+        Block card = getCard(taskId);
+        permissionService.checkPermission(userId, card.getProjectId(),
+                ProjectPermission.MANAGE_PROJECT_CARDS);
+        ganttProjectService.requireWbs(card.getProjectId());
+        List<Block> siblings = ganttProjectService.liveCards(card.getProjectId()).stream()
+                .filter(c -> Objects.equals(c.getParentTaskId(), card.getParentTaskId()))
+                .sorted(Comparator
+                        .comparing((Block b) -> b.getSortOrder() == null ? 0 : b.getSortOrder())
+                        .thenComparing(Block::getCreateAt, Comparator.nullsFirst(Comparator.naturalOrder()))
+                        .thenComparing(Block::getId))
+                .collect(Collectors.toList());
+        int index = -1;
+        for (int i = 0; i < siblings.size(); i++) {
+            if (siblings.get(i).getId().equals(taskId)) {
+                index = i;
+                break;
+            }
+        }
+        int target = "up".equals(direction) ? index - 1 : index + 1;
+        if (index < 0 || target < 0 || target >= siblings.size()) {
+            return;
+        }
+        // 归一化序号后交换，避免存量 sortOrder 全 0 时交换无效
+        for (int i = 0; i < siblings.size(); i++) {
+            siblings.get(i).setSortOrder(i + 1);
+        }
+        Block moved = siblings.get(index);
+        Block neighbor = siblings.get(target);
+        int tmp = moved.getSortOrder();
+        moved.setSortOrder(neighbor.getSortOrder());
+        neighbor.setSortOrder(tmp);
+        moved.setModifiedBy(userId);
+        neighbor.setModifiedBy(userId);
+        blockMapper.updateById(moved);
+        blockMapper.updateById(neighbor);
     }
 
     /**
@@ -345,11 +403,18 @@ public class TaskService {
         card.setSchemaVer(1L);
         card.setType(BlockTypes.CARD);
         card.setTitle(request.getTitle());
+        card.setMilestone(false);
         card.setFields(Map.of(
                 "icon", request.getIcon() != null ? request.getIcon() : "",
                 "description", request.getDescription() != null ? request.getDescription() : "",
                 "contentOrder", List.of(),
                 "properties", request.getProperties() != null ? request.getProperties() : Map.of()));
+        // 父子层级仅 WBS 项目生效（防环校验）；非 WBS 项目忽略父任务请求
+        if (ganttProjectService.hasWbs(projectId) && request.getParentTaskId() != null) {
+            ganttProjectService.validateParent(projectId, null, request.getParentTaskId());
+            card.setParentTaskId(request.getParentTaskId());
+            card.setSortOrder(ganttProjectService.nextSortOrder(projectId, request.getParentTaskId()));
+        }
         card.setCreatedBy(userId);
         card.setModifiedBy(userId);
         blockMapper.insert(card);
@@ -371,6 +436,7 @@ public class TaskService {
         copy.setSchemaVer(source.getSchemaVer());
         copy.setType(BlockTypes.CARD);
         copy.setTitle(resolveCopyTitle(source.getTitle()));
+        copy.setMilestone(source.getMilestone());
         Map<String, Object> sourceFields = source.getFields() != null
                 ? source.getFields() : Map.of();
         Map<String, Object> fields = new HashMap<>(sourceFields);
@@ -379,6 +445,11 @@ public class TaskService {
             fields.put("properties", new HashMap<>(properties));
         }
         copy.setFields(fields);
+        // WBS 项目副本保留层级：挂到源任务同父下并排到同级末尾
+        if (ganttProjectService.hasWbs(source.getProjectId())) {
+            copy.setParentTaskId(source.getParentTaskId());
+            copy.setSortOrder(ganttProjectService.nextSortOrder(source.getProjectId(), source.getParentTaskId()));
+        }
         copy.setCreatedBy(userId);
         copy.setModifiedBy(userId);
         blockMapper.insert(copy);
@@ -416,6 +487,25 @@ public class TaskService {
         fields.put("description", request.getDescription() != null ? request.getDescription() : "");
         fields.put("properties", request.getProperties() != null ? request.getProperties() : Map.of());
         card.setFields(fields);
+        // 里程碑约束：仅起止同日可标记（跨日/未排期拒绝）；日期改为跨日时自动清除既有标记
+        boolean sameDay = sameDayScheduled(fields);
+        if (request.getMilestone() != null) {
+            if (request.getMilestone() && !sameDay) {
+                throw new BusinessException(ResultCode.BAD_REQUEST, "gantt.milestoneSameDayRequired");
+            }
+            card.setMilestone(request.getMilestone());
+        } else if (Boolean.TRUE.equals(card.getMilestone()) && !sameDay) {
+            card.setMilestone(false);
+        }
+        // 父任务变更仅 WBS 项目生效：null=不修改，0=设为根，其余=指定父（防环校验）
+        if (ganttProjectService.hasWbs(card.getProjectId()) && request.getParentTaskId() != null) {
+            Long parentId = request.getParentTaskId() == 0L ? null : request.getParentTaskId();
+            ganttProjectService.validateParent(card.getProjectId(), taskId, parentId);
+            if (!Objects.equals(parentId, card.getParentTaskId())) {
+                card.setParentTaskId(parentId);
+                card.setSortOrder(ganttProjectService.nextSortOrder(card.getProjectId(), parentId));
+            }
+        }
         card.setModifiedBy(userId);
         blockMapper.updateById(card);
         return toVO(card, nicknameMap(List.of(card)),
@@ -424,15 +514,29 @@ public class TaskService {
 
     /**
      * 软删除任务卡片（需卡片管理权限）。
+     * WBS 项目级联软删全部子孙并清理涉及它们的依赖行。
      */
     @Transactional(rollbackFor = Exception.class)
     public void deleteTask(Long userId, Long taskId) {
         Block card = getCard(taskId);
         permissionService.checkPermission(userId, card.getProjectId(),
                 ProjectPermission.MANAGE_PROJECT_CARDS);
-        card.setDeleteAt(LocalDateTime.now());
-        card.setModifiedBy(userId);
-        blockMapper.updateById(card);
+        Set<Long> deletedIds = new java.util.HashSet<>();
+        deletedIds.add(taskId);
+        if (ganttProjectService.hasWbs(card.getProjectId())) {
+            deletedIds.addAll(ganttProjectService.descendantIds(card.getProjectId(), taskId));
+        }
+        LocalDateTime now = LocalDateTime.now();
+        for (Long id : deletedIds) {
+            Block target = id.equals(taskId) ? card : blockMapper.selectById(id);
+            if (target == null || target.getDeleteAt() != null) {
+                continue;
+            }
+            target.setDeleteAt(now);
+            target.setModifiedBy(userId);
+            blockMapper.updateById(target);
+        }
+        ganttProjectService.deleteDependenciesOfTasks(card.getProjectId(), deletedIds);
     }
 
     /**
@@ -496,7 +600,27 @@ public class TaskService {
         }
         vo.setCreatorName(nicknames.get(card.getCreatedBy()));
         vo.setAttachmentCount(attachmentCount);
+        vo.setMilestone(card.getMilestone());
         return vo;
+    }
+
+    /** 起止日期是否同日（里程碑标记约束；未排期视为非同日） */
+    private boolean sameDayScheduled(Map<String, Object> fields) {
+        if (!(fields.get("properties") instanceof Map<?, ?> props)) {
+            return false;
+        }
+        String start = dateKey(props.get(GanttProjectService.PROP_START_DATE));
+        String end = dateKey(props.get(GanttProjectService.PROP_DUE_DATE));
+        return start != null && start.equals(end);
+    }
+
+    /** 日期值仅取前 10 位 YYYY-MM-DD（兼容存量带时间的值） */
+    private String dateKey(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String s = value.toString();
+        return s.length() >= 10 ? s.substring(0, 10) : null;
     }
 
     /**

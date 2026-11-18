@@ -9,6 +9,7 @@ import {
   EditPen,
   Filter,
   Grid,
+  Histogram,
   List,
   Menu,
   Plus,
@@ -42,6 +43,8 @@ const props = defineProps<{
   totalCount: number
   /** 项目默认视图 id（undefined=未设置） */
   defaultViewId?: number
+  /** WBS 门禁：项目是否添加了 WBS 编码属性（控制甘特图新建入口） */
+  hasWbs?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -62,9 +65,15 @@ const VIEW_ICONS: Record<ViewType, typeof List> = {
   board: Menu,
   gallery: Grid,
   calendar: Calendar,
+  gantt: Histogram,
 }
 
-const VIEW_TYPES: ViewType[] = ['table', 'board', 'gallery', 'calendar']
+const BASE_VIEW_TYPES: ViewType[] = ['table', 'board', 'gallery', 'calendar']
+
+/** 可新建的视图类型：甘特图仅对添加了 WBS 编码属性的项目开放 */
+const VIEW_TYPES = computed<ViewType[]>(() =>
+  props.hasWbs ? [...BASE_VIEW_TYPES, 'gantt'] : BASE_VIEW_TYPES,
+)
 
 const activeView = computed(() => props.views.find((v) => v.id === props.activeViewId))
 

@@ -67,12 +67,15 @@ class TaskServiceTest {
     @Mock
     private PermissionService permissionService;
 
+    @Mock
+    private GanttProjectService ganttProjectService;
+
     private TaskService taskService;
 
     @BeforeEach
     void setUp() {
         taskService = new TaskService(blockMapper, projectMapper, userMapper, attachmentMapper,
-                permissionService);
+                permissionService, ganttProjectService);
     }
 
     private Project existingProject() {
@@ -143,6 +146,7 @@ class TaskServiceTest {
         Block source = cardWithProperties(Map.of("p1", "o1"));
         source.getFields().put("icon", "🚀");
         source.getFields().put("description", "原始描述");
+        source.setMilestone(true);
         when(blockMapper.selectById(TASK_ID)).thenReturn(source);
         User copier = new User();
         copier.setId(USER_ID);
@@ -163,6 +167,7 @@ class TaskServiceTest {
         assertEquals("🚀", copy.getFields().get("icon"));
         assertEquals("原始描述", copy.getFields().get("description"));
         assertEquals(Map.of("p1", "o1"), propertiesOf(copy));
+        assertEquals(Boolean.TRUE, copy.getMilestone());
         assertEquals(USER_ID, copy.getCreatedBy());
         verify(permissionService).checkPermission(USER_ID, PROJECT_ID,
                 ProjectPermission.MANAGE_PROJECT_CARDS);
@@ -216,6 +221,96 @@ class TaskServiceTest {
         Map<String, Object> saved = propertiesOf(captor.getValue());
         assertEquals(Map.of("p2", 42), saved);
         assertFalse(saved.containsKey("p1"));
+    }
+
+    @Test
+    void createTaskDefaultsMilestoneFalse() {
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(existingProject());
+
+        TaskRequest request = new TaskRequest();
+        request.setTitle("新任务");
+        taskService.createTask(USER_ID, PROJECT_ID, request);
+
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).insert(captor.capture());
+        assertEquals(Boolean.FALSE, captor.getValue().getMilestone());
+    }
+
+    @Test
+    void updateTaskMilestoneNullKeepsExistingFlag() {
+        Map<String, Object> sameDay = Map.of("startDate", "2026-11-18", "dueDate", "2026-11-18");
+        Block card = cardWithProperties(sameDay);
+        card.setMilestone(true);
+        when(blockMapper.selectById(TASK_ID)).thenReturn(card);
+
+        TaskRequest request = new TaskRequest();
+        request.setTitle("任务");
+        request.setProperties(sameDay);
+        taskService.updateTask(USER_ID, TASK_ID, request);
+
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).updateById(captor.capture());
+        assertEquals(Boolean.TRUE, captor.getValue().getMilestone());
+    }
+
+    @Test
+    void updateTaskMilestoneWritesFlag() {
+        Map<String, Object> sameDay = Map.of("startDate", "2026-11-18", "dueDate", "2026-11-18");
+        when(blockMapper.selectById(TASK_ID)).thenReturn(cardWithProperties(sameDay));
+
+        TaskRequest request = new TaskRequest();
+        request.setTitle("任务");
+        request.setProperties(sameDay);
+        request.setMilestone(true);
+        taskService.updateTask(USER_ID, TASK_ID, request);
+
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).updateById(captor.capture());
+        assertEquals(Boolean.TRUE, captor.getValue().getMilestone());
+    }
+
+    @Test
+    void updateTaskMilestoneRejectedWhenCrossDay() {
+        Map<String, Object> crossDay = Map.of("startDate", "2026-11-01", "dueDate", "2026-11-14");
+        when(blockMapper.selectById(TASK_ID)).thenReturn(cardWithProperties(crossDay));
+
+        TaskRequest request = new TaskRequest();
+        request.setTitle("任务");
+        request.setProperties(crossDay);
+        request.setMilestone(true);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> taskService.updateTask(USER_ID, TASK_ID, request));
+        assertEquals("gantt.milestoneSameDayRequired", ex.getMessageKey());
+    }
+
+    @Test
+    void updateTaskMilestoneRejectedWhenUnscheduled() {
+        when(blockMapper.selectById(TASK_ID)).thenReturn(cardWithProperties(Map.of()));
+
+        TaskRequest request = new TaskRequest();
+        request.setTitle("任务");
+        request.setMilestone(true);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> taskService.updateTask(USER_ID, TASK_ID, request));
+        assertEquals("gantt.milestoneSameDayRequired", ex.getMessageKey());
+    }
+
+    @Test
+    void updateTaskClearsMilestoneWhenDatesDiverge() {
+        Block card = cardWithProperties(Map.of("startDate", "2026-11-18", "dueDate", "2026-11-18"));
+        card.setMilestone(true);
+        when(blockMapper.selectById(TASK_ID)).thenReturn(card);
+
+        TaskRequest request = new TaskRequest();
+        request.setTitle("任务");
+        request.setProperties(Map.of("startDate", "2026-11-18", "dueDate", "2026-11-19"));
+        taskService.updateTask(USER_ID, TASK_ID, request);
+
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).updateById(captor.capture());
+        assertEquals(Boolean.FALSE, captor.getValue().getMilestone());
     }
 
     @Test

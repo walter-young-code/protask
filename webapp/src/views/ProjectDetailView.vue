@@ -7,6 +7,7 @@ import { Calendar, Operation, Plus, Setting, Share, User } from '@element-plus/i
 import { useI18n } from 'vue-i18n'
 import * as projectApi from '@/api/project'
 import * as taskApi from '@/api/task'
+import * as ganttApi from '@/api/gantt'
 import * as blockApi from '@/api/block'
 import { useProjectStore } from '@/stores/project'
 import { useUserStore } from '@/stores/user'
@@ -18,9 +19,14 @@ import {
   parseCardProperties,
 } from '@/utils/permission'
 import { applyView, DEFAULT_VIEW_CONFIG, parseViewConfig, toViewFields } from '@/utils/viewConfig'
+import { hasWbsProperty, START_DATE_PROPERTY_ID, DUE_DATE_PROPERTY_ID } from '@/utils/meta'
+import { collectDescendantIds } from '@/utils/taskTree'
 import type {
   BlockVO,
+  DependencyVO,
+  GanttScale,
   ProjectMemberVO,
+  TaskMoveDirection,
   TaskVO,
   ViewConfig,
   ViewTab,
@@ -31,6 +37,7 @@ import TableView from '@/components/views/TableView.vue'
 import KanbanView from '@/components/views/KanbanView.vue'
 import GalleryView from '@/components/views/GalleryView.vue'
 import CalendarView from '@/components/views/CalendarView.vue'
+import GanttView from '@/components/views/GanttView.vue'
 import TaskDialog from '@/components/TaskDialog.vue'
 import TaskDetailDialog from '@/components/TaskDetailDialog.vue'
 import MemberDialog from '@/components/MemberDialog.vue'
@@ -53,6 +60,8 @@ const keyword = ref('')
 const commentCounts = ref<Record<number, number>>({})
 /** 项目成员列表（member 类型属性的选项来源） */
 const members = ref<ProjectMemberVO[]>([])
+/** FS 依赖列表（仅 WBS 项目加载，供甘特图连线） */
+const dependencies = ref<DependencyVO[]>([])
 
 /** 成员映射：userId -> 昵称（member 属性显示/选择用） */
 const memberMap = computed<Record<number, string>>(() =>
@@ -126,6 +135,9 @@ const visibleTasks = computed(() =>
 
 const cardProperties = computed(() => parseCardProperties(projectStore.currentProject ?? undefined))
 
+/** WBS 门禁：项目是否添加了 WBS 编码属性（层级/甘特/依赖/导出总开关） */
+const hasWbs = computed(() => hasWbsProperty(cardProperties.value))
+
 async function loadProject() {
   const project = await projectApi.getProject(projectId())
   projectStore.setCurrentProject(project)
@@ -164,6 +176,11 @@ async function loadViews() {
 /** 加载项目成员列表（member 类型属性需要） */
 async function loadMembers() {
   members.value = await projectApi.listMembers(projectId())
+}
+
+/** 加载 FS 依赖（非 WBS 项目返回空列表，不请求） */
+async function loadDependencies() {
+  dependencies.value = hasWbs.value ? await ganttApi.listDependencies(projectId()) : []
 }
 
 async function createViewBlock(
@@ -263,6 +280,7 @@ function openDetail(task: TaskVO) {
 /** 属性定义变更后刷新项目（属性模板）与任务（删除属性会级联清理属性值） */
 async function handlePropertiesChanged() {
   await Promise.all([loadProject(), loadTasks()])
+  await loadDependencies()
 }
 
 /** 看板拖拽换列：整体替换 properties 中的分组属性值后刷新（单选传选项 id、多选传选项 id 数组、undefined 清除） */
@@ -302,6 +320,90 @@ function handleDateChange(propertyId: string) {
   handleUpdateConfig(view.id, { ...view.config, dateId: propertyId })
 }
 
+/** 甘特图拖拽改期：将开始/截止日期写回内置排期属性（启用时已绑定，不可删除） */
+async function handleScheduleChange(task: TaskVO, startDate: string, dueDate: string) {
+  const properties = {
+    ...(task.properties ?? {}),
+    [START_DATE_PROPERTY_ID]: startDate,
+    [DUE_DATE_PROPERTY_ID]: dueDate,
+  }
+  await taskApi.updateTask(task.id, {
+    title: task.title,
+    description: task.description,
+    properties,
+  })
+  await loadTasks()
+}
+
+/** 甘特图几何体点击切换里程碑标记：全量回显 payload，避免整体替换语义清空其他字段 */
+async function handleMilestoneChange(task: TaskVO, milestone: boolean) {
+  await taskApi.updateTask(task.id, {
+    title: task.title,
+    description: task.description,
+    properties: task.properties ?? {},
+    milestone,
+  })
+  await loadTasks()
+}
+
+/** 甘特图缩放粒度切换：持久化到当前视图配置 */
+function handleScaleChange(scale: GanttScale) {
+  const view = activeView.value
+  if (!view) return
+  handleUpdateConfig(view.id, { ...view.config, ganttScale: scale })
+}
+
+/** 表格视图 WBS 编码列显示开关：持久化到当前视图配置 */
+function handleShowWbsChange(show: boolean) {
+  const view = activeView.value
+  if (!view) return
+  handleUpdateConfig(view.id, { ...view.config, showWbs: show })
+}
+
+/** 创建 FS 依赖（后端拦截自依赖/重复/环，错误由拦截器提示） */
+async function handleDependencyCreate(predecessorId: number, successorId: number) {
+  await ganttApi.createDependency(projectId(), { predecessorId, successorId })
+  appMessage.success(t('gantt.dependencyCreated'))
+  await loadDependencies()
+}
+
+/** 删除 FS 依赖（点击连线确认后） */
+async function handleDependencyDelete(dependency: DependencyVO) {
+  try {
+    await ElMessageBox.confirm(t('gantt.dependencyDeleteConfirm'), t('gantt.dependencyDeleteTitle'), {
+      type: 'warning',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
+    })
+  } catch {
+    return
+  }
+  await ganttApi.deleteDependency(dependency.id)
+  appMessage.success(t('gantt.dependencyDeleted'))
+  await loadDependencies()
+}
+
+/** 导出 MS Project MSPDI(.xml)：浏览器下载，门禁拒绝时后端 JSON 错误由 getBlob 还原提示 */
+async function handleExport() {
+  const blob = await ganttApi.exportProjectXml(projectId())
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `project-${projectId()}.xml`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+  appMessage.success(t('gantt.exportSuccess'))
+}
+
+/** 任务同级重排（上移/下移，WBS 随之重编号） */
+async function handleMove(task: TaskVO, direction: TaskMoveDirection) {
+  await taskApi.moveTask(task.id, direction)
+  appMessage.success(t('task.moved'))
+  await loadTasks()
+}
+
 /** 复制任务：成功后刷新列表（副本按创建时间倒序出现在最前） */
 async function handleCopy(task: TaskVO) {
   await taskApi.copyTask(task.id)
@@ -310,8 +412,13 @@ async function handleCopy(task: TaskVO) {
 }
 
 async function handleDelete(task: TaskVO) {
+  const descendantCount = hasWbs.value ? collectDescendantIds(tasks.value, task.id).size : 0
+  const message =
+    descendantCount > 0
+      ? t('task.deleteConfirmWithChildren', { title: task.title, count: descendantCount })
+      : t('task.deleteConfirm', { title: task.title })
   try {
-    await ElMessageBox.confirm(t('task.deleteConfirm', { title: task.title }), t('task.deleteTitle'), {
+    await ElMessageBox.confirm(message, t('task.deleteTitle'), {
       type: 'warning',
       confirmButtonText: t('common.delete'),
       cancelButtonText: t('common.cancel'),
@@ -322,17 +429,30 @@ async function handleDelete(task: TaskVO) {
   await taskApi.deleteTask(task.id)
   appMessage.success(t('task.deleted'))
   await loadTasks()
+  await loadDependencies()
 }
 
-/** 详情弹窗保存回调：有更新结果则就地替换，否则整体刷新；评论数可能变化，同步重统计 */
+/** 详情弹窗保存回调：WBS 项目层级/WBS 可能变化需整体刷新；非 WBS 项目就地替换；评论数重统计 */
 async function handleDetailSaved(updated?: TaskVO) {
   if (updated) {
-    tasks.value = tasks.value.map((task) => (task.id === updated.id ? updated : task))
-    if (detailTask.value?.id === updated.id) {
-      detailTask.value = updated
+    if (hasWbs.value) {
+      await loadTasks()
+      await loadDependencies()
+      // 更新接口不返回 wbs/parentTaskId 等树序字段，刷新后从列表回填，避免 null 覆盖详情弹窗
+      const fresh = tasks.value.find((task) => task.id === updated.id)
+      if (fresh && detailTask.value?.id === updated.id) {
+        detailTask.value = fresh
+      }
+    } else {
+      if (detailTask.value?.id === updated.id) {
+        detailTask.value = { ...detailTask.value, ...updated }
+      }
+      tasks.value = tasks.value.map((task) =>
+        task.id === updated.id ? { ...task, ...updated } : task,
+      )
     }
   } else {
-    loadTasks()
+    await loadTasks()
   }
   await loadCommentCounts()
 }
@@ -365,6 +485,7 @@ onMounted(async () => {
       members.value = []
     }),
   ])
+  await loadDependencies()
   await handleTaskQuery()
 })
 
@@ -377,12 +498,14 @@ watch(
       // 先清空旧项目数据，避免新项目页头与旧任务/成员短暂串位
       tasks.value = []
       members.value = []
+      dependencies.value = []
       loadProject().then(() => {
         loadTasks()
         loadViews()
         loadMembers().catch(() => {
           members.value = []
         })
+        loadDependencies()
       })
     }
   },
@@ -500,6 +623,7 @@ watch(
       :card-properties="cardProperties"
       :visible-count="visibleTasks.length"
       :total-count="tasks.length"
+      :has-wbs="hasWbs"
       @switch="switchView"
       @create="handleCreateView"
       @rename="handleRenameView"
@@ -511,17 +635,21 @@ watch(
     <!-- 按视图类型渲染 -->
     <TableView
       v-if="activeView?.config.viewType === 'table'"
-      :tasks="visibleTasks"
+      :tasks="hasWbs ? tasks : visibleTasks"
       :loading="loading"
       :editable="editable()"
       :card-properties="cardProperties"
       :member-map="memberMap"
       :can-manage-properties="manageProperties()"
+      :has-wbs="hasWbs"
+      :show-wbs="activeView?.config.showWbs"
       @open="openDetail"
       @delete="handleDelete"
       @copy="handleCopy"
       @quick-add="openCreateDialog"
       @property-settings="propertySchemaVisible = true"
+      @move="handleMove"
+      @show-wbs-change="handleShowWbsChange"
     />
     <KanbanView
       v-else-if="activeView?.config.viewType === 'board'"
@@ -554,6 +682,25 @@ watch(
       @open="openDetail"
       @date-change="handleDateChange"
     />
+    <GanttView
+      v-else-if="activeView?.config.viewType === 'gantt'"
+      :tasks="tasks"
+      :loading="loading"
+      :editable="editable()"
+      :card-properties="cardProperties"
+      :member-map="memberMap"
+      :has-wbs="hasWbs"
+      :dependencies="dependencies"
+      :gantt-scale="activeView?.config.ganttScale"
+      @open="openDetail"
+      @schedule-change="handleScheduleChange"
+      @scale-change="handleScaleChange"
+      @dependency-create="handleDependencyCreate"
+      @dependency-delete="handleDependencyDelete"
+      @milestone-change="handleMilestoneChange"
+      @export="handleExport"
+      @quick-add="openCreateDialog"
+    />
 
     <!-- 快速新建任务（属性模板管理的唯一入口） -->
     <TaskDialog
@@ -564,6 +711,8 @@ watch(
       :can-manage-properties="manageProperties()"
       :initial-properties="createInitialProperties"
       :member-map="memberMap"
+      :tasks="tasks"
+      :has-wbs="hasWbs"
       @saved="loadTasks"
       @properties-changed="loadProject"
     />
@@ -579,6 +728,8 @@ watch(
       :current-user-id="userStore.user?.id"
       :member-map="memberMap"
       :members="members"
+      :tasks="tasks"
+      :has-wbs="hasWbs"
       @saved="handleDetailSaved"
     />
 

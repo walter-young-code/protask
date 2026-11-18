@@ -223,6 +223,7 @@ public class BlockService {
             copy.setType(block.getType());
             copy.setTitle(block.getTitle());
             copy.setFields(block.getFields() != null ? new HashMap<>(block.getFields()) : new HashMap<>());
+            copy.setSortOrder(block.getSortOrder());
             copy.setCreatedBy(userId);
             copy.setModifiedBy(userId);
             copy.setCreateAt(now);
@@ -231,17 +232,30 @@ public class BlockService {
             idMapping.put(block.getId(), copy.getId());
             copies.add(copy);
         }
-        // 重建父子关系：旧 parentId 映射为新副本 id
+        // 重建父子关系：旧 parentId / parentTaskId 映射为新副本 id
         for (int i = 0; i < blocks.size(); i++) {
-            Long oldParentId = blocks.get(i).getParentId();
-            if (oldParentId == null) {
-                continue;
+            Block source = blocks.get(i);
+            Block target = copies.get(i);
+            boolean changed = false;
+            Long oldParentId = source.getParentId();
+            if (oldParentId != null) {
+                Long newParentId = idMapping.get(oldParentId);
+                if (newParentId != null && !newParentId.equals(target.getParentId())) {
+                    target.setParentId(newParentId);
+                    changed = true;
+                }
             }
-            Long newParentId = idMapping.get(oldParentId);
-            if (newParentId != null && !newParentId.equals(copies.get(i).getParentId())) {
-                copies.get(i).setParentId(newParentId);
-                copies.get(i).setModifiedBy(userId);
-                blockMapper.updateById(copies.get(i));
+            Long oldParentTaskId = source.getParentTaskId();
+            if (oldParentTaskId != null) {
+                Long newParentTaskId = idMapping.get(oldParentTaskId);
+                if (newParentTaskId != null && !newParentTaskId.equals(target.getParentTaskId())) {
+                    target.setParentTaskId(newParentTaskId);
+                    changed = true;
+                }
+            }
+            if (changed) {
+                target.setModifiedBy(userId);
+                blockMapper.updateById(target);
             }
         }
         return idMapping;

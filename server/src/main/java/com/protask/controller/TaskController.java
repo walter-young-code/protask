@@ -3,6 +3,7 @@ package com.protask.controller;
 import cn.dev33.satoken.stp.StpUtil;
 import com.protask.common.Result;
 import com.protask.dto.DashboardVO;
+import com.protask.dto.TaskMoveRequest;
 import com.protask.dto.TaskRequest;
 import com.protask.dto.TaskVO;
 import com.protask.service.TaskService;
@@ -70,6 +71,13 @@ public class TaskController {
     @DeleteMapping("/tasks/{id}")
     public Result<Void> delete(@PathVariable Long id) {
         taskService.deleteTask(StpUtil.getLoginIdAsLong(), id);
+        return Result.ok();
+    }
+
+    /** 同级重排（上移/下移，仅 WBS 项目，WBS 随之重编号） */
+    @PostMapping("/tasks/{id}/move")
+    public Result<Void> move(@PathVariable Long id, @Valid @RequestBody TaskMoveRequest request) {
+        taskService.moveTask(StpUtil.getLoginIdAsLong(), id, request.getDirection());
         return Result.ok();
     }
 }

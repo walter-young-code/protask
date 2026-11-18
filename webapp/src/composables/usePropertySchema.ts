@@ -3,7 +3,7 @@ import { ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import * as projectApi from '@/api/project'
 import { appMessage } from '@/utils/appMessage'
-import { BUILTIN_PROPERTIES, createPropertyId } from '@/utils/meta'
+import { BUILTIN_PROPERTIES, createPropertyId, hasWbsProperty, isGanttRequiredProperty, START_DATE_PROPERTY_ID } from '@/utils/meta'
 import type { CardProperty, CustomPropertyType } from '@/types'
 
 interface UsePropertySchemaOptions {
@@ -76,9 +76,13 @@ export function usePropertySchema(options: UsePropertySchemaOptions) {
   const builtinAdded = (prop: CardProperty): boolean =>
     options.template().some((p) => p.id === prop.id)
 
-  /** 一键添加内置属性：选项已预配，已存在则跳过 */
+  /** 一键添加内置属性：选项已预配，已存在则跳过；开始日期需先有 WBS 编码 */
   async function addBuiltinProperty(prop: CardProperty) {
     if (builtinAdded(prop)) return
+    if (prop.id === START_DATE_PROPERTY_ID && !hasWbsProperty(options.template())) {
+      appMessage.warning(t('property.startDateRequiresWbs'))
+      return
+    }
     await saveTemplate([...options.template(), prop])
   }
 
@@ -94,6 +98,11 @@ export function usePropertySchema(options: UsePropertySchemaOptions) {
 
   /** 删除属性：确认后从模板移除，后端级联清理全部卡片上的对应值 */
   async function deleteProperty(prop: CardProperty) {
+    // 甘特必要字段锁定：启用（含 WBS）后 WBS/开始日期/截止日期不可删（后端兜底校验）
+    if (hasWbsProperty(options.template()) && isGanttRequiredProperty(prop.id)) {
+      appMessage.warning(t('property.requiredLockedHint'))
+      return
+    }
     try {
       await ElMessageBox.confirm(
         t('property.deleteConfirmSubtext', { name: prop.name }),
@@ -107,7 +116,8 @@ export function usePropertySchema(options: UsePropertySchemaOptions) {
     } catch {
       return
     }
-    await saveTemplate(options.template().filter((p) => p.id !== prop.id), false)
+    const template = options.template()
+    await saveTemplate(template.filter((p) => p.id !== prop.id), false)
     options.onDeleted?.(prop)
     appMessage.success(t('property.deleted', { name: prop.name }))
   }

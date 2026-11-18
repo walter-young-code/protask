@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { CUSTOM_PROPERTY_TYPES, createPropertyId, propertyDisplayText } from '@/utils/meta'
+import {
+  BUILTIN_PROPERTIES,
+  CUSTOM_PROPERTY_TYPES,
+  createPropertyId,
+  DUE_DATE_PROPERTY_ID,
+  GANTT_REQUIRED_PROPERTY_IDS,
+  hasScheduleProperties,
+  hasWbsProperty,
+  isGanttRequiredProperty,
+  propertyDisplayText,
+  START_DATE_PROPERTY_ID,
+  WBS_PROPERTY_ID,
+} from '@/utils/meta'
 import type { CardProperty, TaskVO } from '@/types'
 
 /** 构造测试任务 */
@@ -90,5 +102,52 @@ describe('propertyDisplayText', () => {
     expect(propertyDisplayText(makeTask({ p4: 2 }), prop, memberMap)).toBe('李四')
     expect(propertyDisplayText(makeTask({ p4: 99 }), prop, memberMap)).toBe('—')
     expect(propertyDisplayText(makeTask({}), prop, memberMap)).toBe('—')
+  })
+
+  it('WBS 编码只读：值取自 task.wbs 而非 properties，缺省显示占位符', () => {
+    const prop: CardProperty = { id: WBS_PROPERTY_ID, name: 'WBS编码', type: 'text' }
+    const task = { ...makeTask({ wbs: '伪造值' }), wbs: '1.2' }
+    expect(propertyDisplayText(task, prop)).toBe('1.2')
+    expect(propertyDisplayText(makeTask({}), prop)).toBe('—')
+  })
+})
+
+describe('hasWbsProperty（WBS 门禁）', () => {
+  it('模板含内置 wbs 属性时启用门禁', () => {
+    expect(hasWbsProperty([{ id: WBS_PROPERTY_ID, name: 'WBS编码', type: 'text' }])).toBe(true)
+  })
+
+  it('模板不含 wbs 时关闭门禁（空模板/其他属性）', () => {
+    expect(hasWbsProperty([])).toBe(false)
+    expect(hasWbsProperty([{ id: 'status', name: '状态', type: 'select' }])).toBe(false)
+  })
+})
+
+describe('甘特必要字段与排期绑定', () => {
+  it('必要字段为 WBS/开始日期/截止日期三个内置 id', () => {
+    expect(GANTT_REQUIRED_PROPERTY_IDS).toEqual([WBS_PROPERTY_ID, START_DATE_PROPERTY_ID, DUE_DATE_PROPERTY_ID])
+    expect(isGanttRequiredProperty(WBS_PROPERTY_ID)).toBe(true)
+    expect(isGanttRequiredProperty(START_DATE_PROPERTY_ID)).toBe(true)
+    expect(isGanttRequiredProperty(DUE_DATE_PROPERTY_ID)).toBe(true)
+    expect(isGanttRequiredProperty('status')).toBe(false)
+    expect(isGanttRequiredProperty('custom-date')).toBe(false)
+  })
+
+  it('hasScheduleProperties 需开始/截止日期同时在模板中', () => {
+    const start: CardProperty = { id: START_DATE_PROPERTY_ID, name: '开始日期', type: 'date' }
+    const due: CardProperty = { id: DUE_DATE_PROPERTY_ID, name: '截止日期', type: 'date' }
+    expect(hasScheduleProperties([start, due])).toBe(true)
+    expect(hasScheduleProperties([start])).toBe(false)
+    expect(hasScheduleProperties([due])).toBe(false)
+    expect(hasScheduleProperties([])).toBe(false)
+  })
+})
+
+describe('BUILTIN_PROPERTIES', () => {
+  it('包含只读 WBS 编码（text）与开始日期（date）内置属性', () => {
+    const wbs = BUILTIN_PROPERTIES.find((p) => p.id === WBS_PROPERTY_ID)
+    const startDate = BUILTIN_PROPERTIES.find((p) => p.id === START_DATE_PROPERTY_ID)
+    expect(wbs?.type).toBe('text')
+    expect(startDate?.type).toBe('date')
   })
 })

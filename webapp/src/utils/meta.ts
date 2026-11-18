@@ -44,7 +44,51 @@ export const BUILTIN_PROPERTIES: CardProperty[] = [
     name: '截止日期',
     type: 'date',
   },
+  {
+    id: 'wbs',
+    name: 'WBS编码',
+    type: 'text',
+  },
+  {
+    id: 'startDate',
+    name: '开始日期',
+    type: 'date',
+  },
 ]
+
+/** 内置 WBS 编码属性 id（门禁开关：项目属性模板含此 id 即启用层级/甘特/依赖/导出） */
+export const WBS_PROPERTY_ID = 'wbs'
+
+/** 内置开始日期属性 id（仅 WBS 项目菜单提供，与截止日期绑定排期） */
+export const START_DATE_PROPERTY_ID = 'startDate'
+
+/** 内置截止日期属性 id（全项目通用） */
+export const DUE_DATE_PROPERTY_ID = 'dueDate'
+
+/** 项目是否添加了 WBS 编码属性（层级/甘特/依赖/导出的总门禁） */
+export function hasWbsProperty(cardProperties: CardProperty[]): boolean {
+  return cardProperties.some((p) => p.id === WBS_PROPERTY_ID)
+}
+
+/** 甘特必要字段：启用（含 WBS）后锁定不可删除 */
+export const GANTT_REQUIRED_PROPERTY_IDS: string[] = [
+  WBS_PROPERTY_ID,
+  START_DATE_PROPERTY_ID,
+  DUE_DATE_PROPERTY_ID,
+]
+
+/** 属性 id 是否为甘特必要字段 */
+export function isGanttRequiredProperty(id: string): boolean {
+  return GANTT_REQUIRED_PROPERTY_IDS.includes(id)
+}
+
+/** 模板是否已绑定排期字段（开始日期 + 截止日期均在） */
+export function hasScheduleProperties(cardProperties: CardProperty[]): boolean {
+  return (
+    cardProperties.some((p) => p.id === START_DATE_PROPERTY_ID) &&
+    cardProperties.some((p) => p.id === DUE_DATE_PROPERTY_ID)
+  )
+}
 
 /** 选项可选颜色（对齐 Focalboard propColor* 10 色系，浅色标签底，直接存 hex） */
 export const OPTION_COLORS = [
@@ -72,6 +116,10 @@ export function propertyDisplayText(
   prop: CardProperty,
   memberMap?: Record<number, string>,
 ): string {
+  // WBS 编码为后端树序自动编号，值取自 task.wbs（只读，不存于 properties）
+  if (prop.id === WBS_PROPERTY_ID) {
+    return task.wbs || '—'
+  }
   const value = task.properties?.[prop.id]
   if (value == null || value === '') return '—'
   if (prop.type === 'select') {

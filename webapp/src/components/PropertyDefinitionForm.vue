@@ -2,13 +2,15 @@
 import { ref, watch } from 'vue'
 import { appMessage } from '@/utils/appMessage'
 import { useI18n } from 'vue-i18n'
-import { Close, Delete, Plus } from '@element-plus/icons-vue'
+import { Close, Delete, Lock, Plus } from '@element-plus/icons-vue'
 import { CUSTOM_PROPERTY_TYPES, createPropertyId, OPTION_COLORS } from '@/utils/meta'
 import type { CardProperty, PropertyType } from '@/types'
 
 const props = defineProps<{
   /** 被编辑的属性定义 */
   property: CardProperty
+  /** 甘特必要字段：删除锁定（禁用删除按钮并展示锁定提示） */
+  deleteDisabled?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -277,9 +279,24 @@ function addOption() {
     </div>
 
     <div class="property-definition-footer">
-      <el-button link size="small" type="danger" @click="emit('delete')">
+      <el-button
+        link
+        size="small"
+        type="danger"
+        :disabled="deleteDisabled"
+        :title="deleteDisabled ? t('property.requiredLockedHint') : undefined"
+        @click="emit('delete')"
+      >
         {{ t('property.delete') }}
       </el-button>
+      <span
+        v-if="deleteDisabled"
+        class="property-required-hint"
+        :title="t('property.requiredLockedHint')"
+      >
+        <el-icon><Lock /></el-icon>
+        {{ t('property.requiredTag') }}
+      </span>
     </div>
   </div>
 </template>
@@ -374,7 +391,20 @@ function addOption() {
 }
 
 .property-definition-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   border-top: 1px solid var(--app-border-light);
   padding-top: 6px;
+}
+
+.property-required-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--el-color-warning);
+  cursor: help;
 }
 </style>

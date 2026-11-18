@@ -1,9 +1,11 @@
-import type { CardProperty, TaskVO, ViewConfig, ViewFilter, ViewSort, ViewType } from '@/types'
+import type { CardProperty, GanttScale, TaskVO, ViewConfig, ViewFilter, ViewSort, ViewType } from '@/types'
 
 /** 默认视图配置（表格视图、无筛选、无排序） */
 export const DEFAULT_VIEW_CONFIG: ViewConfig = { viewType: 'table', filters: [], sorts: [] }
 
-const VALID_VIEW_TYPES: ViewType[] = ['table', 'board', 'gallery', 'calendar']
+const VALID_VIEW_TYPES: ViewType[] = ['table', 'board', 'gallery', 'calendar', 'gantt']
+
+const VALID_GANTT_SCALES: GanttScale[] = ['day', 'week', 'month']
 
 /**
  * 从 view 块的 fields 解析视图配置（容错处理，非法值回退默认）。
@@ -19,6 +21,10 @@ export function parseViewConfig(fields?: Record<string, unknown>): ViewConfig {
     dateId: typeof fields?.dateId === 'string' ? (fields.dateId as string) : undefined,
     cardPropertyIds: Array.isArray(fields?.cardPropertyIds)
       ? (fields.cardPropertyIds as unknown[]).filter((v): v is string => typeof v === 'string')
+      : undefined,
+    showWbs: typeof fields?.showWbs === 'boolean' ? (fields.showWbs as boolean) : undefined,
+    ganttScale: VALID_GANTT_SCALES.includes(fields?.ganttScale as GanttScale)
+      ? (fields?.ganttScale as GanttScale)
       : undefined,
   }
   config.filters = config.filters.filter(
@@ -41,6 +47,8 @@ export function toViewFields(config: ViewConfig): Record<string, unknown> {
     groupById: config.groupById,
     dateId: config.dateId,
     cardPropertyIds: config.cardPropertyIds,
+    showWbs: config.showWbs,
+    ganttScale: config.ganttScale,
   }
 }
 

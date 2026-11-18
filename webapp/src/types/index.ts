@@ -342,6 +342,14 @@ export interface TaskVO {
   properties?: Record<string, unknown>
   /** 附件数量（随任务列表返回） */
   attachmentCount?: number
+  /** 父任务 ID（仅添加 WBS 编码属性的项目生效，null=根任务） */
+  parentTaskId?: number | null
+  /** WBS 树序编号（后端按树序自动计算，只读，如 1 / 1.1 / 1.2） */
+  wbs?: string | null
+  /** 直接子任务数量（随任务列表返回，供表格/甘特展开判断） */
+  childCount?: number
+  /** 里程碑标记（false=普通任务,true=里程碑；甘特菱形渲染消费） */
+  milestone?: boolean
 }
 
 /** 创建/更新任务请求（properties 整体替换卡片属性值） */
@@ -352,6 +360,37 @@ export interface TaskRequest {
   description?: string
   /** 动态属性(按项目 cardProperties 模板定义) */
   properties?: Record<string, unknown>
+  /** 父任务 ID（仅 WBS 项目生效）：创建 null=根；更新 null=不修改、0=设为根、其余=指定父 */
+  parentTaskId?: number | null
+  /** 里程碑标记（更新 null=不修改） */
+  milestone?: boolean
+}
+
+/** 任务同级重排方向（上移/下移，WBS 随之重编号） */
+export type TaskMoveDirection = 'up' | 'down'
+
+/** 任务依赖视图（当前仅 FS 完成-开始） */
+export interface DependencyVO {
+  id: number
+  projectId: number
+  /** 前置任务 ID */
+  predecessorId: number
+  /** 后置任务 ID */
+  successorId: number
+  /** 依赖类型: FS/SS/FF/SF（当前仅 FS） */
+  type: string
+  /** 延迟天数 */
+  lag: number
+}
+
+/** 创建任务依赖请求 */
+export interface DependencyRequest {
+  predecessorId: number
+  successorId: number
+  /** 依赖类型，缺省 FS */
+  type?: string
+  /** 延迟天数，缺省 0 */
+  lag?: number
 }
 
 /** 仪表盘任务列表项（跨项目轻量字段） */
@@ -449,8 +488,11 @@ export interface ProjectToTemplateRequest {
   description?: string
 }
 
-/** 视图类型（对齐 Focalboard ViewType） */
-export type ViewType = 'table' | 'board' | 'gallery' | 'calendar'
+/** 视图类型（对齐 Focalboard ViewType，gantt 为 WBS 项目专属第 5 种视图） */
+export type ViewType = 'table' | 'board' | 'gallery' | 'calendar' | 'gantt'
+
+/** 甘特图时间缩放粒度 */
+export type GanttScale = 'day' | 'week' | 'month'
 
 /** 可筛选的字段：动态属性 id */
 export type FilterField = string
@@ -485,6 +527,10 @@ export interface ViewConfig {
   dateId?: string
   /** 看板卡片显示的属性 id 列表（undefined=默认前 3 个有值属性） */
   cardPropertyIds?: string[]
+  /** 表格视图是否显示 WBS 编码列（仅 WBS 项目有效） */
+  showWbs?: boolean
+  /** 甘特图时间缩放粒度（缺省 week） */
+  ganttScale?: GanttScale
 }
 
 /** 视图 Tab 的展示结构（view 块 + 解析后的配置） */

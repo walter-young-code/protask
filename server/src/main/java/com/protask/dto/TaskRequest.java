@@ -24,4 +24,13 @@ public class TaskRequest {
 
     /** 动态属性(按项目 cardProperties 定义)，整体替换卡片 properties */
     private Map<String, Object> properties;
+
+    /**
+     * 父任务ID（仅 WBS 项目生效）：创建时 null=根任务；
+     * 更新时 null=不修改，0=设为根任务，其余=指定父任务（防环校验）。
+     */
+    private Long parentTaskId;
+
+    /** 里程碑标记，null 表示不修改（与 icon 语义一致） */
+    private Boolean milestone;
 }

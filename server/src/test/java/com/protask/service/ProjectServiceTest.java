@@ -21,6 +21,7 @@ import com.protask.mapper.ProjectMapper;
 import com.protask.mapper.ProjectMemberMapper;
 import com.protask.mapper.ProjectCategoryAssignmentMapper;
 import com.protask.mapper.ProjectCategoryMapper;
+import com.protask.mapper.TaskDependencyMapper;
 import com.protask.mapper.UserMapper;
 import com.protask.permission.PermissionService;
 import com.protask.permission.ProjectPermission;
@@ -92,6 +93,9 @@ class ProjectServiceTest {
     @Mock
     private BlockService blockService;
 
+    /** 真实实例：必要字段锁定/启用绑定为纯模板逻辑，需真实执行（依赖 mapper 仍为 mock） */
+    private GanttProjectService ganttProjectService;
+
     @Mock
     private BlockMapper blockMapper;
 
@@ -105,9 +109,11 @@ class ProjectServiceTest {
 
     @BeforeEach
     void setUp() {
+        ganttProjectService = new GanttProjectService(blockMapper, projectMapper, userMapper,
+                org.mockito.Mockito.mock(TaskDependencyMapper.class), permissionService);
         projectService = new ProjectService(
                 projectMapper, projectMemberMapper, projectCategoryMapper, assignmentMapper, blockMapper,
-                userMapper, permissionService, blockService, attachmentService, notificationMapper);
+                userMapper, permissionService, blockService, ganttProjectService, attachmentService, notificationMapper);
     }
 
     private Project projectWithTemplate(String template) {
@@ -206,6 +212,85 @@ class ProjectServiceTest {
         projectService.updateCardProperties(USER_ID, PROJECT_ID, request);
 
         verify(blockService, never()).removePropertyFromCards(any(), any(), any());
+    }
+
+    private static final String WBS_TEMPLATE = "[{\"id\":\"wbs\",\"name\":\"WBS编码\",\"type\":\"text\"},"
+            + "{\"id\":\"startDate\",\"name\":\"开始日期\",\"type\":\"date\"},"
+            + "{\"id\":\"dueDate\",\"name\":\"截止日期\",\"type\":\"date\"}]";
+
+    @Test
+    void ganttProjectRejectsRequiredFieldDeletion() {
+        Project project = projectWithTemplate(WBS_TEMPLATE);
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(project);
+
+        // 保留 wbs/startDate，删除 dueDate → 锁定拦截
+        CardPropertiesRequest request = new CardPropertiesRequest();
+        request.setProperties(List.of(def("wbs", "WBS编码", "text"), def("startDate", "开始日期", "date")));
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> projectService.updateCardProperties(USER_ID, PROJECT_ID, request));
+        assertEquals("gantt.requiredFieldsLocked", ex.getMessageKey());
+        verify(projectMapper, never()).updateById(any(Project.class));
+        verify(blockService, never()).removePropertyFromCards(any(), any(), any());
+    }
+
+    @Test
+    void ganttProjectRejectsWbsDeletion() {
+        Project project = projectWithTemplate(WBS_TEMPLATE);
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(project);
+
+        CardPropertiesRequest request = new CardPropertiesRequest();
+        request.setProperties(List.of(def("startDate", "开始日期", "date"), def("dueDate", "截止日期", "date")));
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> projectService.updateCardProperties(USER_ID, PROJECT_ID, request));
+        assertEquals("gantt.requiredFieldsLocked", ex.getMessageKey());
+    }
+
+    @Test
+    void ganttProjectAllowsCustomPropertyDeletion() {
+        String template = "[{\"id\":\"wbs\",\"name\":\"WBS编码\",\"type\":\"text\"},"
+                + "{\"id\":\"startDate\",\"name\":\"开始日期\",\"type\":\"date\"},"
+                + "{\"id\":\"dueDate\",\"name\":\"截止日期\",\"type\":\"date\"},"
+                + "{\"id\":\"p1\",\"name\":\"工作量\",\"type\":\"number\"}]";
+        Project project = projectWithTemplate(template);
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(project);
+        stubReload();
+
+        CardPropertiesRequest request = new CardPropertiesRequest();
+        request.setProperties(List.of(def("wbs", "WBS编码", "text"),
+                def("startDate", "开始日期", "date"), def("dueDate", "截止日期", "date")));
+        projectService.updateCardProperties(USER_ID, PROJECT_ID, request);
+
+        verify(blockService).removePropertyFromCards(eq(PROJECT_ID), eq(List.of("p1")), eq(USER_ID));
+    }
+
+    @Test
+    void addingWbsAutoBindsScheduleFields() {
+        Project project = projectWithTemplate("[]");
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(project);
+        stubReload();
+
+        CardPropertiesRequest request = new CardPropertiesRequest();
+        request.setProperties(List.of(def("wbs", "WBS编码", "text")));
+        projectService.updateCardProperties(USER_ID, PROJECT_ID, request);
+
+        ArgumentCaptor<Project> captor = ArgumentCaptor.forClass(Project.class);
+        verify(projectMapper).updateById(captor.capture());
+        String saved = captor.getValue().getCardProperties();
+        assertTrue(saved.contains("\"id\":\"startDate\""));
+        assertTrue(saved.contains("\"id\":\"dueDate\""));
+    }
+
+    @Test
+    void plainProjectCanStillDeleteDueDate() {
+        Project project = projectWithTemplate("[{\"id\":\"dueDate\",\"name\":\"截止日期\",\"type\":\"date\"}]");
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(project);
+        stubReload();
+
+        CardPropertiesRequest request = new CardPropertiesRequest();
+        request.setProperties(List.of());
+        projectService.updateCardProperties(USER_ID, PROJECT_ID, request);
+
+        verify(blockService).removePropertyFromCards(eq(PROJECT_ID), eq(List.of("dueDate")), eq(USER_ID));
     }
 
     @Test

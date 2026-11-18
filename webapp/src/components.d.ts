@@ -55,6 +55,7 @@ declare module 'vue' {
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     ElUpload: typeof import('element-plus/es')['ElUpload']
     GalleryView: typeof import('./components/views/GalleryView.vue')['default']
+    GanttView: typeof import('./components/views/GanttView.vue')['default']
     IconPicker: typeof import('./components/IconPicker.vue')['default']
     KanbanView: typeof import('./components/views/KanbanView.vue')['default']
     MemberDialog: typeof import('./components/MemberDialog.vue')['default']

@@ -27,6 +27,15 @@ public class Block {
     /** 父块ID(卡片内容块的父为卡片) */
     private Long parentId;
 
+    /** 父任务ID(仅添加 WBS 编码属性的项目生效，非 WBS 项目恒为 null) */
+    private Long parentTaskId;
+
+    /** 同级排序序号(WBS 项目树序重排用) */
+    private Integer sortOrder;
+
+    /** 里程碑标记(false=普通任务,true=里程碑；甘特菱形渲染与 MSPDI 导出消费) */
+    private Boolean milestone;
+
     /** 块结构版本号 */
     private Long schemaVer;
 

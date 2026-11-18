@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Plus } from '@element-plus/icons-vue'
-import { BUILTIN_PROPERTIES, CUSTOM_PROPERTY_TYPES } from '@/utils/meta'
+import { BUILTIN_PROPERTIES, CUSTOM_PROPERTY_TYPES, hasWbsProperty, isGanttRequiredProperty, START_DATE_PROPERTY_ID } from '@/utils/meta'
 import { usePropertySchema } from '@/composables/usePropertySchema'
 import PropertyMenu from '@/components/PropertyMenu.vue'
 import type { CardProperty } from '@/types'
@@ -20,6 +21,17 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+/** WBS 门禁：项目是否添加了 WBS 编码属性 */
+const hasWbs = computed(() => hasWbsProperty(props.cardProperties))
+
+/** 甘特必要字段：启用后锁定不可删除 */
+const isLocked = (prop: CardProperty): boolean => hasWbs.value && isGanttRequiredProperty(prop.id)
+
+/** 可添加的内置属性：开始日期仅 WBS 项目提供 */
+const availableBuiltins = computed(() =>
+  BUILTIN_PROPERTIES.filter((p) => p.id !== START_DATE_PROPERTY_ID || hasWbs.value),
+)
 
 const { newPropertyId, changeProperty, builtinAdded, addPropertyCommand, deleteProperty } =
   usePropertySchema({
@@ -44,6 +56,15 @@ function close() {
   >
     <p class="property-schema-hint">{{ t('property.settingsHint') }}</p>
 
+    <!-- WBS 门禁说明：添加「WBS 编码」解锁层级/甘特/依赖/导出，并自动绑定开始/截止日期（必要字段锁定不可删） -->
+    <el-alert
+      :title="t('property.wbsHint')"
+      :type="hasWbs ? 'success' : 'info'"
+      :closable="false"
+      show-icon
+      class="property-schema-wbs-hint"
+    />
+
     <div v-if="props.cardProperties.length" class="property-schema-list">
       <!-- 与新建任务弹窗一致：点击属性名展开菜单，在菜单内自定义名称/类型/选项或删除 -->
       <div
@@ -54,10 +75,16 @@ function close() {
         <PropertyMenu
           :property="prop"
           :initial-open="newPropertyId === prop.id"
+          :delete-disabled="isLocked(prop)"
           @change="changeProperty"
           @delete="deleteProperty(prop)"
         />
-        <span class="property-schema-type">{{ t(`propertyType.${prop.type}`) }}</span>
+        <span class="property-schema-meta">
+          <el-tag v-if="isLocked(prop)" size="small" type="warning" effect="plain" round>
+            {{ t('property.requiredTag') }}
+          </el-tag>
+          <span class="property-schema-type">{{ t(`propertyType.${prop.type}`) }}</span>
+        </span>
       </div>
     </div>
     <el-empty v-else :description="t('property.empty')" :image-size="60" />
@@ -73,9 +100,9 @@ function close() {
             <el-dropdown-item v-for="type in CUSTOM_PROPERTY_TYPES" :key="type" :command="type">
               {{ t(`propertyType.${type}`) }}
             </el-dropdown-item>
-            <!-- 内置属性：选项已预配，一键添加（已存在时置灰） -->
+            <!-- 内置属性：选项已预配，一键添加（已存在时置灰；开始日期仅 WBS 项目提供） -->
             <el-dropdown-item
-              v-for="prop in BUILTIN_PROPERTIES"
+              v-for="prop in availableBuiltins"
               :key="prop.id"
               divided
               :disabled="builtinAdded(prop)"
@@ -102,6 +129,10 @@ function close() {
   color: var(--app-text-secondary);
 }
 
+.property-schema-wbs-hint {
+  margin-bottom: 12px;
+}
+
 .property-schema-list {
   display: flex;
   flex-direction: column;
@@ -123,6 +154,13 @@ function close() {
 
 .property-schema-item:hover {
   background: var(--el-color-primary-light-9);
+}
+
+.property-schema-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .property-schema-type {

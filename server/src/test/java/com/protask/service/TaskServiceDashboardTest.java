@@ -55,12 +55,15 @@ class TaskServiceDashboardTest {
     @Mock
     private PermissionService permissionService;
 
+    @Mock
+    private GanttProjectService ganttProjectService;
+
     private TaskService taskService;
 
     @BeforeEach
     void setUp() {
         taskService = new TaskService(blockMapper, projectMapper, userMapper, attachmentMapper,
-                permissionService);
+                permissionService, ganttProjectService);
     }
 
     private User normalUser() {

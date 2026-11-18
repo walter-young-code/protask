@@ -9,6 +9,8 @@ const props = defineProps<{
   property: CardProperty
   /** 初始展开（刚新增的属性自动打开菜单便于改名，参照 Focalboard newTemplateId） */
   initialOpen?: boolean
+  /** 甘特必要字段：删除锁定 */
+  deleteDisabled?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -50,6 +52,7 @@ function requestDelete() {
 
     <PropertyDefinitionForm
       :property="property"
+      :delete-disabled="deleteDisabled"
       @change="emit('change', $event)"
       @delete="requestDelete"
     />

@@ -39,4 +39,16 @@ public class TaskVO {
 
     /** 附件数量（任务下附件记录数） */
     private Long attachmentCount;
+
+    /** 父任务ID（仅 WBS 项目返回，根任务为 null） */
+    private Long parentTaskId;
+
+    /** WBS 编码（仅 WBS 项目按树序自动编号：1 / 1.1 / 1.2，只读） */
+    private String wbs;
+
+    /** 直接子任务数（仅 WBS 项目返回） */
+    private Integer childCount;
+
+    /** 里程碑标记（false=普通任务,true=里程碑） */
+    private Boolean milestone;
 }

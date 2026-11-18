@@ -1,5 +1,5 @@
 import { del, get, post, put } from './request'
-import type { DashboardVO, TaskRequest, TaskVO } from '@/types'
+import type { DashboardVO, TaskMoveDirection, TaskRequest, TaskVO } from '@/types'
 
 /** 跨项目仪表盘：当前用户可见项目的任务统计与分类列表 */
 export const getDashboard = () => get<DashboardVO>('/v1/dashboard')
@@ -23,3 +23,7 @@ export const updateTask = (id: number, data: TaskRequest) => put<TaskVO>(`/v1/ta
 
 /** 删除任务 */
 export const deleteTask = (id: number) => del<void>(`/v1/tasks/${id}`)
+
+/** 任务同级重排（上移/下移，仅 WBS 项目生效，WBS 随之重编号） */
+export const moveTask = (id: number, direction: TaskMoveDirection) =>
+  post<void>(`/v1/tasks/${id}/move`, { direction })
