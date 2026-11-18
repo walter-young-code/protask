@@ -23,6 +23,8 @@ public class Project {
     private String name;
 
     /** 项目描述 */
+    // 清空描述需写 NULL（updateProject/updateTemplate 全量回写，前端清空时传 null）：默认 NOT_NULL 策略会跳过 null 致静默失败；所有 updateById 均基于全量加载实体，ALWAYS 安全
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String description;
 
     /** 项目类型: O 公开(非成员仅可查看), P 私有 */
@@ -37,6 +39,8 @@ public class Project {
     private String calendarToken;
 
     /** 项目图标 */
+    // 模板链路全量回写可清空图标（null）；updateProject 的 null=不修改守卫不受影响（实体全量加载保留原值），ALWAYS 安全
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String icon;
 
     /** 卡片动态属性定义模板(JSON 数组) */

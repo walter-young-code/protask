@@ -29,6 +29,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -311,6 +312,43 @@ class TaskServiceTest {
         ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
         verify(blockMapper).updateById(captor.capture());
         assertEquals(Boolean.FALSE, captor.getValue().getMilestone());
+    }
+
+    @Test
+    void updateTaskParentZeroSetsRoot() {
+        Block card = cardWithProperties(Map.of());
+        card.setParentTaskId(5L);
+        card.setSortOrder(2);
+        when(blockMapper.selectById(TASK_ID)).thenReturn(card);
+        when(ganttProjectService.hasWbs(PROJECT_ID)).thenReturn(true);
+        when(ganttProjectService.nextSortOrder(PROJECT_ID, null)).thenReturn(3);
+
+        TaskRequest request = new TaskRequest();
+        request.setTitle("任务");
+        request.setParentTaskId(0L);
+        taskService.updateTask(USER_ID, TASK_ID, request);
+
+        verify(ganttProjectService).validateParent(PROJECT_ID, TASK_ID, null);
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).updateById(captor.capture());
+        assertNull(captor.getValue().getParentTaskId());
+        assertEquals(3, captor.getValue().getSortOrder());
+    }
+
+    @Test
+    void updateTaskParentNullKeepsExisting() {
+        Block card = cardWithProperties(Map.of());
+        card.setParentTaskId(5L);
+        when(blockMapper.selectById(TASK_ID)).thenReturn(card);
+        when(ganttProjectService.hasWbs(PROJECT_ID)).thenReturn(true);
+
+        TaskRequest request = new TaskRequest();
+        request.setTitle("任务");
+        taskService.updateTask(USER_ID, TASK_ID, request);
+
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).updateById(captor.capture());
+        assertEquals(5L, captor.getValue().getParentTaskId());
     }
 
     @Test

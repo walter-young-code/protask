@@ -1,6 +1,8 @@
 package com.protask.entity;
 
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -39,6 +41,8 @@ public class User {
     private String avatar;
 
     /** 所属团队 ID（可空） */
+    // 解除归属需写 NULL（注销用户/团队改「无」）：默认 NOT_NULL 策略会跳过 null 致静默失败；所有 updateById 均基于全量加载实体，ALWAYS 安全
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Long teamId;
 
     /** 系统角色: admin/user */

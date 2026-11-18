@@ -6,6 +6,7 @@ import com.protask.dto.CardPropertiesRequest;
 import com.protask.dto.ProjectCopyRequest;
 import com.protask.dto.ProjectRequest;
 import com.protask.dto.ProjectTemplateRequest;
+import com.protask.dto.ProjectTemplateUpdateRequest;
 import com.protask.dto.ProjectTemplateVO;
 import com.protask.dto.ProjectToTemplateRequest;
 import com.protask.dto.ProjectVO;
@@ -39,6 +40,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -900,6 +902,42 @@ class ProjectServiceTest {
         projectService.updateProject(USER_ID, PROJECT_ID, request);
 
         verify(assignmentMapper, never()).insert(any(ProjectCategoryAssignment.class));
+    }
+
+    /** 清空项目描述：前端清空时传 null，全量回写需真正置 null（description 已标 ALWAYS 策略）；icon null=不修改保留原值 */
+    @Test
+    void updateProjectClearsDescriptionWhenNull() {
+        Project project = sourceProject();
+        project.setOwnerId(USER_ID);
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(project);
+        when(permissionService.getEffectiveRole(USER_ID, PROJECT_ID)).thenReturn(ProjectRole.ADMIN);
+        when(assignmentMapper.selectOne(any())).thenReturn(null);
+
+        ProjectRequest request = new ProjectRequest();
+        request.setName("改名");
+        projectService.updateProject(USER_ID, PROJECT_ID, request);
+
+        assertNull(project.getDescription());
+        assertEquals("🏢", project.getIcon());
+        verify(projectMapper).updateById(project);
+    }
+
+    /** 模板清空描述与图标：updateTemplate 全量回写，null 需真正写入（ALWAYS 策略） */
+    @Test
+    void updateTemplateClearsDescriptionAndIcon() {
+        Project template = sourceProject();
+        template.setIsTemplate(true);
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(template);
+        when(permissionService.isSystemAdmin(USER_ID)).thenReturn(true);
+        when(blockService.listCards(PROJECT_ID)).thenReturn(List.of());
+
+        ProjectTemplateUpdateRequest request = new ProjectTemplateUpdateRequest();
+        request.setName("模板改名");
+        projectService.updateTemplate(USER_ID, PROJECT_ID, request);
+
+        assertNull(template.getDescription());
+        assertNull(template.getIcon());
+        verify(projectMapper).updateById(template);
     }
 
     /** 移除成员时清理其个人归类 */

@@ -1,6 +1,7 @@
 package com.protask.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -28,6 +29,8 @@ public class Block {
     private Long parentId;
 
     /** 父任务ID(仅添加 WBS 编码属性的项目生效，非 WBS 项目恒为 null) */
+    // 置根需写 NULL：默认 NOT_NULL 策略会跳过 null 致「设为根任务」静默失败；所有 updateById 均基于全量加载实体，ALWAYS 安全
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Long parentTaskId;
 
     /** 同级排序序号(WBS 项目树序重排用) */

@@ -25,6 +25,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -300,6 +301,37 @@ class AdminUserServiceTest {
         adminUserService.deleteUser(ADMIN_ID, OTHER_ID, null);
 
         assertEquals(3L, project.getOwnerId());
+    }
+
+    @Test
+    void deleteUser_clearsTeamAffiliation() {
+        User target = user(OTHER_ID, "user", 1);
+        target.setTeamId(9L);
+        when(userMapper.selectById(OTHER_ID)).thenReturn(target);
+        when(passwordEncoder.encode(anyString())).thenReturn("random-password");
+        when(projectMapper.selectList(any())).thenReturn(List.of());
+
+        adminUserService.deleteUser(ADMIN_ID, OTHER_ID, null);
+
+        // 解除团队归属必须真正置 null（实体 teamId 已标 ALWAYS 策略，否则 updateById 静默跳过）
+        assertNull(target.getTeamId());
+        verify(userMapper).updateById(target);
+    }
+
+    @Test
+    void update_teamZeroClearsAffiliation() {
+        User target = user(OTHER_ID, "user", 1);
+        target.setTeamId(9L);
+        when(userMapper.selectById(OTHER_ID)).thenReturn(target);
+        when(teamMapper.selectList(any())).thenReturn(List.of());
+        AdminUserUpdateRequest request = new AdminUserUpdateRequest();
+        request.setTeamId(0L);
+
+        adminUserService.update(ADMIN_ID, OTHER_ID, request);
+
+        // 0=清除团队归属：resolveTeamId 返回 null，需真正写入（ALWAYS 策略）
+        assertNull(target.getTeamId());
+        verify(userMapper).updateById(target);
     }
 
     private AdminUserQuery query() {
