@@ -23,6 +23,7 @@ import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -458,5 +459,158 @@ class TaskServiceTest {
 
         assertEquals(1, result.size());
         assertEquals(0L, result.get(0).getAttachmentCount());
+    }
+
+    // ---------- 排程设置（WBS 项目） ----------
+
+    private TaskRequest scheduleRequest(Map<String, Object> properties) {
+        TaskRequest request = new TaskRequest();
+        request.setTitle("任务");
+        request.setProperties(properties);
+        return request;
+    }
+
+    @Test
+    void updateTaskAutoMoveSetsConstraintKeepingDuration() {
+        Block card = cardWithProperties(Map.of("startDate", "2026-11-01", "dueDate", "2026-11-03"));
+        card.setScheduleMode("auto");
+        card.setDurationDays(3);
+        when(blockMapper.selectById(TASK_ID)).thenReturn(card);
+        when(ganttProjectService.hasWbs(PROJECT_ID)).thenReturn(true);
+
+        // 整体拖拽移动：起止同移 4 天 → 设约束，工期不变
+        TaskVO vo = taskService.updateTask(USER_ID, TASK_ID,
+                scheduleRequest(Map.of("startDate", "2026-11-05", "dueDate", "2026-11-07")));
+
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).updateById(captor.capture());
+        assertEquals(LocalDate.of(2026, 11, 5), captor.getValue().getStartConstraint());
+        assertEquals(3, captor.getValue().getDurationDays());
+        verify(ganttProjectService).rescheduleAutoTasks(PROJECT_ID);
+        assertEquals("auto", vo.getScheduleMode());
+        assertEquals(LocalDate.of(2026, 11, 5), vo.getStartConstraint());
+    }
+
+    @Test
+    void updateTaskAutoStretchDerivesDurationWithoutConstraint() {
+        Block card = cardWithProperties(Map.of("startDate", "2026-11-01", "dueDate", "2026-11-03"));
+        card.setScheduleMode("auto");
+        when(blockMapper.selectById(TASK_ID)).thenReturn(card);
+        when(ganttProjectService.hasWbs(PROJECT_ID)).thenReturn(true);
+
+        // 右端拉伸：开始不变仅改截止 → 只推导工期，不钉住开始
+        taskService.updateTask(USER_ID, TASK_ID,
+                scheduleRequest(Map.of("startDate", "2026-11-01", "dueDate", "2026-11-06")));
+
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).updateById(captor.capture());
+        assertNull(captor.getValue().getStartConstraint());
+        assertEquals(6, captor.getValue().getDurationDays());
+    }
+
+    @Test
+    void updateTaskManualDurationSyncsDueDate() {
+        Block card = cardWithProperties(Map.of("startDate", "2026-11-01", "dueDate", "2026-11-02"));
+        when(blockMapper.selectById(TASK_ID)).thenReturn(card);
+        when(ganttProjectService.hasWbs(PROJECT_ID)).thenReturn(true);
+
+        TaskRequest request = scheduleRequest(Map.of("startDate", "2026-11-01", "dueDate", "2026-11-02"));
+        request.setDurationDays(4);
+        taskService.updateTask(USER_ID, TASK_ID, request);
+
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).updateById(captor.capture());
+        assertEquals(4, captor.getValue().getDurationDays());
+        assertEquals("2026-11-04", propertiesOf(captor.getValue()).get("dueDate"));
+    }
+
+    @Test
+    void updateTaskRejectsInvalidScheduleMode() {
+        when(blockMapper.selectById(TASK_ID)).thenReturn(cardWithProperties(Map.of()));
+        when(ganttProjectService.hasWbs(PROJECT_ID)).thenReturn(true);
+
+        TaskRequest request = scheduleRequest(Map.of());
+        request.setScheduleMode("weekly");
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> taskService.updateTask(USER_ID, TASK_ID, request));
+        assertEquals("task.scheduleModeInvalid", ex.getMessageKey());
+    }
+
+    @Test
+    void updateTaskRejectsOutOfRangeDuration() {
+        when(blockMapper.selectById(TASK_ID)).thenReturn(cardWithProperties(Map.of()));
+        when(ganttProjectService.hasWbs(PROJECT_ID)).thenReturn(true);
+
+        TaskRequest zero = scheduleRequest(Map.of());
+        zero.setDurationDays(0);
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> taskService.updateTask(USER_ID, TASK_ID, zero));
+        assertEquals("task.durationInvalid", ex.getMessageKey());
+
+        TaskRequest tooLong = scheduleRequest(Map.of());
+        tooLong.setDurationDays(3651);
+        ex = assertThrows(BusinessException.class,
+                () -> taskService.updateTask(USER_ID, TASK_ID, tooLong));
+        assertEquals("task.durationInvalid", ex.getMessageKey());
+    }
+
+    @Test
+    void updateTaskClearConstraintResetsToNull() {
+        Block card = cardWithProperties(Map.of("startDate", "2026-11-10", "dueDate", "2026-11-11"));
+        card.setScheduleMode("auto");
+        card.setStartConstraint(LocalDate.of(2026, 11, 10));
+        when(blockMapper.selectById(TASK_ID)).thenReturn(card);
+        when(ganttProjectService.hasWbs(PROJECT_ID)).thenReturn(true);
+
+        TaskRequest request = scheduleRequest(Map.of("startDate", "2026-11-10", "dueDate", "2026-11-11"));
+        request.setClearConstraint(true);
+        taskService.updateTask(USER_ID, TASK_ID, request);
+
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).updateById(captor.capture());
+        assertNull(captor.getValue().getStartConstraint());
+    }
+
+    @Test
+    void updateTaskMilestoneIgnoresExplicitDuration() {
+        Map<String, Object> sameDay = Map.of("startDate", "2026-11-18", "dueDate", "2026-11-18");
+        Block card = cardWithProperties(sameDay);
+        card.setMilestone(true);
+        when(blockMapper.selectById(TASK_ID)).thenReturn(card);
+        when(ganttProjectService.hasWbs(PROJECT_ID)).thenReturn(true);
+
+        TaskRequest request = scheduleRequest(sameDay);
+        request.setDurationDays(5);
+        taskService.updateTask(USER_ID, TASK_ID, request);
+
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).updateById(captor.capture());
+        assertNull(captor.getValue().getDurationDays());
+        assertEquals(Boolean.TRUE, captor.getValue().getMilestone());
+    }
+
+    @Test
+    void copyTaskKeepsScheduleModeAndDurationButNotConstraint() {
+        Block source = cardWithProperties(Map.of("startDate", "2026-11-10", "dueDate", "2026-11-12"));
+        source.setScheduleMode("auto");
+        source.setDurationDays(3);
+        source.setStartConstraint(LocalDate.of(2026, 11, 10));
+        when(blockMapper.selectById(TASK_ID)).thenReturn(source);
+        User copier = new User();
+        copier.setId(USER_ID);
+        copier.setNickname("复制者");
+        when(userMapper.selectBatchIds(anyCollection())).thenReturn(List.of(copier));
+
+        try (MockedStatic<MessageUtil> mocked = mockStatic(MessageUtil.class)) {
+            mocked.when(() -> MessageUtil.get("task.copySuffix")).thenReturn(" 副本");
+            taskService.copyTask(USER_ID, TASK_ID);
+        }
+
+        ArgumentCaptor<Block> captor = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper).insert(captor.capture());
+        Block copy = captor.getValue();
+        assertEquals("auto", copy.getScheduleMode());
+        assertEquals(3, copy.getDurationDays());
+        assertNull(copy.getStartConstraint());
     }
 }

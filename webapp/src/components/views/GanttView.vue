@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Calendar, Check, Download, Plus, ZoomIn } from '@element-plus/icons-vue'
-import type { CardProperty, DependencyVO, GanttScale, TaskVO } from '@/types'
+import type { CardProperty, DependencyType, DependencyVO, GanttScale, TaskVO } from '@/types'
 import { DUE_DATE_PROPERTY_ID, START_DATE_PROPERTY_ID, hasScheduleProperties } from '@/utils/meta'
 import { buildTaskTree, flattenTree, type TaskTreeNode } from '@/utils/taskTree'
 import {
@@ -20,19 +20,23 @@ import {
   TASK_COL_MAX_WIDTH,
   TASK_COL_MIN_WIDTH,
   addDays,
+  anchorX,
   arrowPoints,
   barGeometry,
   buildMonthSegments,
   buildTimeColumns,
   computeRange,
   dateToX,
+  dependencyEnds,
+  dependencyPath,
+  dependencyType,
   diffDays,
   durationDays,
-  elbowPath,
   fitRangeToWidth,
   formatDate,
   isWeekend,
   today,
+  type BarEnd,
   type BarGeometry,
 } from '@/utils/gantt'
 
@@ -44,7 +48,7 @@ const props = defineProps<{
   memberMap?: Record<number, string>
   /** WBS 门禁：项目是否添加了 WBS 编码属性 */
   hasWbs: boolean
-  /** FS 依赖列表（父级加载） */
+  /** 依赖列表（FS/SS/FF/SF，父级加载） */
   dependencies: DependencyVO[]
   ganttScale?: GanttScale
 }>()
@@ -53,7 +57,7 @@ const emit = defineEmits<{
   (e: 'open', task: TaskVO): void
   (e: 'scheduleChange', task: TaskVO, startDate: string, dueDate: string): void
   (e: 'scaleChange', scale: GanttScale): void
-  (e: 'dependencyCreate', predecessorId: number, successorId: number): void
+  (e: 'dependencyCreate', predecessorId: number, successorId: number, type: DependencyType): void
   (e: 'dependencyDelete', dependency: DependencyVO): void
   (e: 'milestoneChange', task: TaskVO, milestone: boolean): void
   (e: 'export'): void
@@ -153,6 +157,8 @@ interface DragState {
   startClientY: number
   cursorX: number
   cursorY: number
+  /** link 模式的源锚点端（start=条首 / finish=条尾） */
+  sourceEnd: BarEnd
 }
 const drag = ref<DragState | null>(null)
 const chartSvg = ref<SVGSVGElement | null>(null)
@@ -297,12 +303,17 @@ const bars = computed(() =>
 
 /** 左表行：附工期（自然日）/开始/截止，摘要行按子孙汇总，拖拽中随条体预览同步 */
 const leftRows = computed(() =>
-  bars.value.map(({ row, geo }) => ({
-    row,
-    start: geo ? formatDate(geo.start) : '—',
-    due: geo ? formatDate(geo.end) : '—',
-    duration: geo ? durationDays(geo.start, geo.end) : null,
-  })),
+  bars.value.map(({ row, geo }) => {
+    // 工期列：叶子任务显式工期优先（拖拽预览中仍按日期推导），其余按起止 diff+1
+    const dragging = drag.value?.taskId === row.id && drag.value.mode !== 'link'
+    const explicit = !dragging && !row.children.length && row.durationDays != null && row.durationDays > 0
+    return {
+      row,
+      start: geo ? formatDate(geo.start) : '—',
+      due: geo ? formatDate(geo.end) : '—',
+      duration: geo ? (explicit ? row.durationDays! : durationDays(geo.start, geo.end)) : null,
+    }
+  }),
 )
 const barById = computed(() => {
   const map = new Map<number, { row: TaskTreeNode; index: number; geo: BarGeometry | null }>()
@@ -310,30 +321,75 @@ const barById = computed(() => {
   return map
 })
 
-/** FS 连线（仅渲染两端均可见的依赖） */
+/** 依赖连线（仅渲染两端均可见的依赖，按类型取锚点与箭头方向） */
 const links = computed(() => {
-  const result: { dep: DependencyVO; path: string; arrow: string }[] = []
+  const result: { dep: DependencyVO; path: string; arrow: string; label: string }[] = []
   for (const dep of props.dependencies) {
     const pred = barById.value.get(dep.predecessorId)
     const succ = barById.value.get(dep.successorId)
     if (!pred?.geo || !succ?.geo) continue
-    const x1 = pred.geo.x + pred.geo.width
+    const { fromEnd, toEnd } = dependencyEnds(dep.type)
+    const x1 = anchorX(pred.geo, fromEnd, pxPerDay.value)
     const y1 = pred.index * ROW_HEIGHT + ROW_HEIGHT / 2
-    const x2 = succ.geo.x
+    const x2 = anchorX(succ.geo, toEnd, pxPerDay.value)
     const y2 = succ.index * ROW_HEIGHT + ROW_HEIGHT / 2
-    result.push({ dep, path: elbowPath(x1, y1, x2, y2), arrow: arrowPoints(x2, y2) })
+    const dir = toEnd === 'start' ? 'right' : 'left'
+    result.push({
+      dep,
+      path: dependencyPath(x1, y1, x2, y2, fromEnd, toEnd),
+      arrow: arrowPoints(x2, y2, dir),
+      label: dependencyLabel(dep),
+    })
   }
   return result
 })
 
-/** 拖拽连线时的临时虚线（源条尾 → 光标） */
+/** 连线 tooltip：类型 + 延迟（如 SS +2天，负数为提前量） */
+function dependencyLabel(dep: DependencyVO): string {
+  const lag = dep.lag ? ` ${dep.lag > 0 ? '+' : ''}${dep.lag}${t('gantt.lagDay')}` : ''
+  return `${dep.type}${lag}`
+}
+
+/** 拖拽建联的候选目标：按光标 y 定位行、x 相对条体中点判定左半=start/右半=finish */
+const linkTarget = computed<{ row: TaskTreeNode; index: number; geo: BarGeometry; end: BarEnd } | null>(() => {
+  const d = drag.value
+  if (!d || d.mode !== 'link') return null
+  const index = Math.floor(d.cursorY / ROW_HEIGHT)
+  const row = rows.value[index]
+  if (!row || row.id === d.taskId) return null
+  const bar = barById.value.get(row.id)
+  if (!bar?.geo) return null
+  const mid = bar.geo.x + bar.geo.width / 2
+  const end: BarEnd = d.cursorX < mid ? 'start' : 'finish'
+  return { row, index, geo: bar.geo, end }
+})
+
+/** 目标半区高亮框（拖拽建联时指示将连接的锚点端） */
+const linkHighlight = computed<{ x: number; width: number; y: number } | null>(() => {
+  const target = linkTarget.value
+  if (!target) return null
+  const half = target.geo.width / 2
+  return {
+    x: target.end === 'start' ? target.geo.x : target.geo.x + half,
+    width: half,
+    y: target.index * ROW_HEIGHT,
+  }
+})
+
+/** 拖拽连线时的临时路径：有候选目标时吸附到锚点并按类型走肘形，否则直连光标 */
 const tempLink = computed(() => {
   const d = drag.value
   if (!d || d.mode !== 'link') return null
   const source = barById.value.get(d.taskId)
   if (!source?.geo) return null
-  const x1 = source.geo.x + source.geo.width
+  const x1 = anchorX(source.geo, d.sourceEnd, pxPerDay.value)
   const y1 = source.index * ROW_HEIGHT + ROW_HEIGHT / 2
+  const target = linkTarget.value
+  if (target) {
+    const x2 = anchorX(target.geo, target.end, pxPerDay.value)
+    const y2 = target.index * ROW_HEIGHT + ROW_HEIGHT / 2
+    return dependencyPath(x1, y1, x2, y2, d.sourceEnd, target.end)
+  }
   return `M ${x1} ${y1} L ${d.cursorX} ${d.cursorY}`
 })
 
@@ -361,12 +417,13 @@ function beginDrag(e: MouseEvent, row: TaskTreeNode, mode: DragState['mode']) {
     startClientY: e.clientY,
     cursorX: point.x,
     cursorY: point.y,
+    sourceEnd: 'finish',
   }
   window.addEventListener('mousemove', onDragMove)
   window.addEventListener('mouseup', onDragEnd)
 }
 
-function beginLink(e: MouseEvent, row: TaskTreeNode) {
+function beginLink(e: MouseEvent, row: TaskTreeNode, end: BarEnd) {
   if (!props.editable) return
   const geo = barById.value.get(row.id)?.geo
   if (!geo) return
@@ -384,6 +441,7 @@ function beginLink(e: MouseEvent, row: TaskTreeNode) {
     startClientY: e.clientY,
     cursorX: point.x,
     cursorY: point.y,
+    sourceEnd: end,
   }
   window.addEventListener('mousemove', onDragMove)
   window.addEventListener('mouseup', onDragEnd)
@@ -423,8 +481,12 @@ function onDragEnd(e: MouseEvent) {
     const point = chartPoint(e)
     const targetIndex = Math.floor(point.y / ROW_HEIGHT)
     const target = rows.value[targetIndex]
-    if (target && target.id !== d.taskId && barById.value.get(target.id)?.geo) {
-      emit('dependencyCreate', d.taskId, target.id)
+    const targetBar = target ? barById.value.get(target.id) : null
+    if (target && target.id !== d.taskId && targetBar?.geo) {
+      // 落点左半=开始锚点 / 右半=完成锚点，与源端组合出 FS/SS/FF/SF
+      const mid = targetBar.geo.x + targetBar.geo.width / 2
+      const toEnd: BarEnd = point.x < mid ? 'start' : 'finish'
+      emit('dependencyCreate', d.taskId, target.id, dependencyType(d.sourceEnd, toEnd))
     }
     return
   }
@@ -469,6 +531,25 @@ function summaryPoints(x: number, width: number, midY: number): string {
 function milestonePoints(cx: number, cy: number): string {
   const r = 8
   return `${cx},${cy - r} ${cx + r},${cy} ${cx},${cy + r} ${cx - r},${cy}`
+}
+
+/** 双端连接点几何：普通条悬于条首/条尾外，里程碑悬于菱形左右顶点外（与拉伸手柄留出间隙） */
+function connectorsFor(bar: { row: TaskTreeNode; index: number; geo: BarGeometry | null }): { end: BarEnd; stemX1: number; stemX2: number; dotX: number; cy: number }[] {
+  const geo = bar.geo
+  if (!geo) return []
+  const cy = rowY(bar.index) + ROW_HEIGHT / 2
+  if (geo.milestone) {
+    const cx = geo.x + pxPerDay.value / 2
+    const r = 8
+    return [
+      { end: 'start', stemX1: cx - r, stemX2: cx - r - BAR_CONNECTOR_OFFSET, dotX: cx - r - BAR_CONNECTOR_OFFSET, cy },
+      { end: 'finish', stemX1: cx + r, stemX2: cx + r + BAR_CONNECTOR_OFFSET, dotX: cx + r + BAR_CONNECTOR_OFFSET, cy },
+    ]
+  }
+  return [
+    { end: 'start', stemX1: geo.x, stemX2: geo.x - BAR_CONNECTOR_OFFSET, dotX: geo.x - BAR_CONNECTOR_OFFSET, cy },
+    { end: 'finish', stemX1: geo.x + geo.width, stemX2: geo.x + geo.width + BAR_CONNECTOR_OFFSET, dotX: geo.x + geo.width + BAR_CONNECTOR_OFFSET, cy },
+  ]
 }
 
 onBeforeUnmount(() => {
@@ -532,6 +613,7 @@ onBeforeUnmount(() => {
         <span class="legend-item"><i class="legend-swatch" :style="{ background: DEFAULT_COLORS.done }" />{{ t('gantt.legendDone') }}</span>
         <span class="legend-item"><i class="legend-diamond" />{{ t('gantt.legendMilestone') }}</span>
         <span class="legend-item"><i class="legend-summary" />{{ t('gantt.legendSummary') }}</span>
+        <span class="legend-item"><i class="legend-swatch legend-auto" />{{ t('gantt.autoTask') }}</span>
       </div>
 
       <el-empty v-if="!scheduleBound" :description="t('gantt.noDateProperty')" :image-size="70" />
@@ -680,27 +762,59 @@ onBeforeUnmount(() => {
                 class="today-line"
               />
 
-              <!-- FS 依赖连线 -->
+              <!-- 依赖连线（四类型，tooltip 显示类型+延迟，点击删除） -->
               <g v-for="link in links" :key="`dep${link.dep.id}`" class="dep-group" @click="handleLinkClick(link.dep)">
+                <title>{{ link.label }}</title>
                 <path :d="link.path" class="dep-hit" />
                 <path :d="link.path" class="dep-line" />
                 <polygon :points="link.arrow" class="dep-arrow" />
               </g>
+              <!-- 拖拽建联的目标半区高亮 -->
+              <rect
+                v-if="linkHighlight"
+                :x="linkHighlight.x"
+                :y="linkHighlight.y"
+                :width="linkHighlight.width"
+                :height="ROW_HEIGHT"
+                class="link-target-highlight"
+              />
               <!-- 拖拽中的临时连线 -->
               <path v-if="tempLink" :d="tempLink" class="dep-temp" />
 
               <!-- 条体 -->
               <g v-for="bar in bars" :key="`bar${bar.row.id}`">
                 <template v-if="bar.geo">
-                  <!-- 里程碑菱形 -->
-                  <g v-if="bar.geo.milestone">
+                  <!-- 里程碑菱形（双端连接点，锚点均在菱形中心） -->
+                  <g v-if="bar.geo.milestone" class="bar-group">
                     <polygon
                       :points="milestonePoints(bar.geo.x + pxPerDay / 2, rowY(bar.index) + ROW_HEIGHT / 2)"
                       class="bar-milestone"
+                      :class="{ 'bar-auto': bar.row.scheduleMode === 'auto' }"
                       @mousedown="beginDrag($event, bar.row, 'move')"
                     />
+                    <template v-if="editable">
+                      <template v-for="c in connectorsFor(bar)" :key="c.end">
+                        <line
+                          :x1="c.stemX1"
+                          :y1="c.cy"
+                          :x2="c.stemX2"
+                          :y2="c.cy"
+                          class="bar-connector-stem"
+                          :class="{ active: drag && drag.mode === 'link' && drag.taskId === bar.row.id }"
+                        />
+                        <circle
+                          :cx="c.dotX"
+                          :cy="c.cy"
+                          :r="BAR_CONNECTOR_RADIUS"
+                          class="bar-connector"
+                          :class="{ active: drag && drag.mode === 'link' && drag.taskId === bar.row.id }"
+                          :title="t('gantt.connectorHint')"
+                          @mousedown="beginLink($event, bar.row, c.end)"
+                        />
+                      </template>
+                    </template>
                   </g>
-                  <!-- 摘要任务汇总条：长条 + 两端三角下标单一多边形，避免拼接缝 -->
+                  <!-- 摘要任务汇总条：长条 + 两端三角下标单一多边形，避免拼接缝（无连接点） -->
                   <g v-else-if="bar.geo.summary" :title="t('gantt.summaryHint')">
                     <polygon
                       :points="summaryPoints(bar.geo.x, bar.geo.width, rowY(bar.index) + ROW_HEIGHT / 2)"
@@ -716,11 +830,12 @@ onBeforeUnmount(() => {
                       :height="BAR_HEIGHT"
                       :rx="3"
                       class="bar-body"
+                      :class="{ 'bar-auto': bar.row.scheduleMode === 'auto' }"
                       :style="{ fill: barFill(bar.row) }"
-                      :title="bar.row.title"
+                      :title="bar.row.scheduleMode === 'auto' ? `${bar.row.title} · ${t('gantt.autoTask')}` : bar.row.title"
                       @mousedown="beginDrag($event, bar.row, 'move')"
                     />
-                    <!-- 左右拉伸手柄 -->
+                    <!-- 左右拉伸手柄 + 双端连接点（拖拽创建四类型依赖，悬于端外不遮挡手柄） -->
                     <template v-if="editable">
                       <rect
                         :x="bar.geo.x - 3"
@@ -738,24 +853,25 @@ onBeforeUnmount(() => {
                         class="bar-handle"
                         @mousedown="beginDrag($event, bar.row, 'resize-end')"
                       />
-                      <!-- 条尾外连接点（拖拽创建 FS 依赖，悬于端外不遮挡拉伸手柄） -->
-                      <line
-                        :x1="bar.geo.x + bar.geo.width"
-                        :y1="rowY(bar.index) + ROW_HEIGHT / 2"
-                        :x2="bar.geo.x + bar.geo.width + BAR_CONNECTOR_OFFSET"
-                        :y2="rowY(bar.index) + ROW_HEIGHT / 2"
-                        class="bar-connector-stem"
-                        :class="{ active: drag && drag.mode === 'link' && drag.taskId === bar.row.id }"
-                      />
-                      <circle
-                        :cx="bar.geo.x + bar.geo.width + BAR_CONNECTOR_OFFSET"
-                        :cy="rowY(bar.index) + ROW_HEIGHT / 2"
-                        :r="BAR_CONNECTOR_RADIUS"
-                        class="bar-connector"
-                        :class="{ active: drag && drag.mode === 'link' && drag.taskId === bar.row.id }"
-                        :title="t('gantt.connectorHint')"
-                        @mousedown="beginLink($event, bar.row)"
-                      />
+                      <template v-for="c in connectorsFor(bar)" :key="c.end">
+                        <line
+                          :x1="c.stemX1"
+                          :y1="c.cy"
+                          :x2="c.stemX2"
+                          :y2="c.cy"
+                          class="bar-connector-stem"
+                          :class="{ active: drag && drag.mode === 'link' && drag.taskId === bar.row.id }"
+                        />
+                        <circle
+                          :cx="c.dotX"
+                          :cy="c.cy"
+                          :r="BAR_CONNECTOR_RADIUS"
+                          class="bar-connector"
+                          :class="{ active: drag && drag.mode === 'link' && drag.taskId === bar.row.id }"
+                          :title="t('gantt.connectorHint')"
+                          @mousedown="beginLink($event, bar.row, c.end)"
+                        />
+                      </template>
                     </template>
                   </g>
                 </template>
@@ -850,6 +966,16 @@ onBeforeUnmount(() => {
   height: 10px;
   border-radius: 2px;
   display: inline-block;
+}
+
+/* 自动计划图例：斜纹填充 + 虚线描边，与条体 bar-auto 样式呼应 */
+.legend-auto {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--el-color-primary) 0 3px,
+    var(--el-color-primary-light-7) 3px 6px
+  );
+  border: 1px dashed var(--el-color-primary);
 }
 
 .legend-diamond {
@@ -1233,6 +1359,14 @@ onBeforeUnmount(() => {
   cursor: grabbing;
 }
 
+/* 自动计划条体：虚线描边 + 半透明填充，区别于手动条（拖拽机制不变，落库后吸附到实际日期） */
+.bar-auto {
+  stroke: var(--el-color-primary);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 3;
+  fill-opacity: 0.75;
+}
+
 .bar-handle {
   fill: transparent;
   cursor: ew-resize;
@@ -1327,6 +1461,13 @@ onBeforeUnmount(() => {
   stroke: var(--el-color-primary);
   stroke-width: 1.5;
   stroke-dasharray: 5 4;
+  pointer-events: none;
+}
+
+/* 拖拽建联时目标半区高亮（指示将连接的锚点端，不拦截事件） */
+.link-target-highlight {
+  fill: var(--el-color-primary);
+  opacity: 0.12;
   pointer-events: none;
 }
 

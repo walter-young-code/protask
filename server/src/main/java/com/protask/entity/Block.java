@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import lombok.Data;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Map;
 
@@ -38,6 +39,17 @@ public class Block {
 
     /** 里程碑标记(false=普通任务,true=里程碑；甘特菱形渲染与 MSPDI 导出消费) */
     private Boolean milestone;
+
+    /** 计划模式(manual=手动/auto=自动，仅 WBS 项目生效；自动任务日期由前置依赖驱动) */
+    private String scheduleMode;
+
+    /** 显式工期(自然日含首日)；null=按起止日期推导。置空需写 NULL，同 parentTaskId 用 ALWAYS */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer durationDays;
+
+    /** 自动计划开始约束(不得早于)；null=纯前置驱动。清除约束需写 NULL，用 ALWAYS */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private LocalDate startConstraint;
 
     /** 块结构版本号 */
     private Long schemaVer;

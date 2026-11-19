@@ -33,4 +33,13 @@ public class TaskRequest {
 
     /** 里程碑标记，null 表示不修改（与 icon 语义一致） */
     private Boolean milestone;
+
+    /** 计划模式（仅 WBS 项目生效）：manual/auto，null 表示不修改 */
+    private String scheduleMode;
+
+    /** 显式工期（自然日含首日，1~3650），null 表示不修改；里程碑忽略 */
+    private Integer durationDays;
+
+    /** true=清除自动计划开始约束（恢复纯前置驱动），null/false 不修改 */
+    private Boolean clearConstraint;
 }

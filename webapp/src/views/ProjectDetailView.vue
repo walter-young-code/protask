@@ -3,11 +3,12 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { appMessage } from '@/utils/appMessage'
-import { Calendar, Operation, Plus, Setting, Share, User } from '@element-plus/icons-vue'
+import { Calendar, Download, Operation, Plus, Setting, Share, Upload, User } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import * as projectApi from '@/api/project'
 import * as taskApi from '@/api/task'
 import * as ganttApi from '@/api/gantt'
+import * as taskExcelApi from '@/api/taskExcel'
 import * as blockApi from '@/api/block'
 import { useProjectStore } from '@/stores/project'
 import { useUserStore } from '@/stores/user'
@@ -23,6 +24,7 @@ import { hasWbsProperty, START_DATE_PROPERTY_ID, DUE_DATE_PROPERTY_ID } from '@/
 import { collectDescendantIds } from '@/utils/taskTree'
 import type {
   BlockVO,
+  DependencyType,
   DependencyVO,
   GanttScale,
   ProjectMemberVO,
@@ -44,6 +46,7 @@ import MemberDialog from '@/components/MemberDialog.vue'
 import ShareDialog from '@/components/ShareDialog.vue'
 import CalendarSubscribeDialog from '@/components/CalendarSubscribeDialog.vue'
 import PropertySchemaDialog from '@/components/PropertySchemaDialog.vue'
+import TaskImportDialog from '@/components/TaskImportDialog.vue'
 import { useShareStore } from '@/stores/share'
 
 const { t } = useI18n()
@@ -78,6 +81,7 @@ const detailTask = ref<TaskVO | null>(null)
 const shareDialogVisible = ref(false)
 const calendarSubscribeDialogVisible = ref(false)
 const propertySchemaVisible = ref(false)
+const importDialogVisible = ref(false)
 
 /** 当前用户在项目中的生效角色（后端下发） */
 const myRole = () => projectStore.currentProject?.myRole
@@ -178,7 +182,7 @@ async function loadMembers() {
   members.value = await projectApi.listMembers(projectId())
 }
 
-/** 加载 FS 依赖（非 WBS 项目返回空列表，不请求） */
+/** 加载依赖（非 WBS 项目返回空列表，不请求） */
 async function loadDependencies() {
   dependencies.value = hasWbs.value ? await ganttApi.listDependencies(projectId()) : []
 }
@@ -269,6 +273,10 @@ function handleHeaderCommand(command: string) {
     calendarSubscribeDialogVisible.value = true
   } else if (command === 'properties') {
     propertySchemaVisible.value = true
+  } else if (command === 'exportExcel') {
+    handleExportExcel()
+  } else if (command === 'importExcel') {
+    importDialogVisible.value = true
   }
 }
 
@@ -360,14 +368,16 @@ function handleShowWbsChange(show: boolean) {
   handleUpdateConfig(view.id, { ...view.config, showWbs: show })
 }
 
-/** 创建 FS 依赖（后端拦截自依赖/重复/环，错误由拦截器提示） */
-async function handleDependencyCreate(predecessorId: number, successorId: number) {
-  await ganttApi.createDependency(projectId(), { predecessorId, successorId })
+/** 创建依赖（双端拖拽落点判型 FS/SS/FF/SF；后端拦截自依赖/重复/环，错误由拦截器提示） */
+async function handleDependencyCreate(predecessorId: number, successorId: number, type: DependencyType) {
+  await ganttApi.createDependency(projectId(), { predecessorId, successorId, type })
   appMessage.success(t('gantt.dependencyCreated'))
   await loadDependencies()
+  // 自动排程引擎已传播日期，刷新任务使后置任务实时顺延
+  await loadTasks()
 }
 
-/** 删除 FS 依赖（点击连线确认后） */
+/** 删除依赖（点击连线确认后） */
 async function handleDependencyDelete(dependency: DependencyVO) {
   try {
     await ElMessageBox.confirm(t('gantt.dependencyDeleteConfirm'), t('gantt.dependencyDeleteTitle'), {
@@ -381,6 +391,14 @@ async function handleDependencyDelete(dependency: DependencyVO) {
   await ganttApi.deleteDependency(dependency.id)
   appMessage.success(t('gantt.dependencyDeleted'))
   await loadDependencies()
+  // 删依赖后自动后置可能吸附到约束/锚点，刷新任务
+  await loadTasks()
+}
+
+/** 设置弹窗依赖增删改：刷新依赖与任务（引擎传播结果含吸附回弹实时可见） */
+async function handleDependenciesChanged() {
+  await loadDependencies()
+  await loadTasks()
 }
 
 /** 导出 MS Project MSPDI(.xml)：浏览器下载，门禁拒绝时后端 JSON 错误由 getBlob 还原提示 */
@@ -395,6 +413,26 @@ async function handleExport() {
   document.body.removeChild(link)
   URL.revokeObjectURL(url)
   appMessage.success(t('gantt.exportSuccess'))
+}
+
+/** 导出任务 Excel(.xlsx)：固定列 + 内置字段，WBS 项目含层级/依赖列 */
+async function handleExportExcel() {
+  const blob = await taskExcelApi.exportTasksXlsx(projectId())
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${projectStore.currentProject?.name ?? 'project'}-tasks.xlsx`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+  appMessage.success(t('taskExcel.exportSuccess'))
+}
+
+/** Excel 导入成功：刷新任务与依赖（WBS 项目可能新增层级/连线） */
+async function handleExcelImported() {
+  await loadTasks()
+  await loadDependencies()
 }
 
 /** 任务同级重排（上移/下移，WBS 随之重编号） */
@@ -599,6 +637,12 @@ watch(
               <el-dropdown-item v-if="adminLevel()" command="calendarSubscribe" :icon="Calendar">
                 {{ t('projectDetail.calendarSubscribe') }}
               </el-dropdown-item>
+              <el-dropdown-item command="exportExcel" :icon="Download">
+                {{ t('projectDetail.exportExcel') }}
+              </el-dropdown-item>
+              <el-dropdown-item v-if="editable()" command="importExcel" :icon="Upload">
+                {{ t('projectDetail.importExcel') }}
+              </el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -730,7 +774,9 @@ watch(
       :members="members"
       :tasks="tasks"
       :has-wbs="hasWbs"
+      :dependencies="dependencies"
       @saved="handleDetailSaved"
+      @dependencies-changed="handleDependenciesChanged"
     />
 
     <MemberDialog
@@ -749,6 +795,13 @@ watch(
       :project-id="projectId()"
       :card-properties="cardProperties"
       @changed="handlePropertiesChanged"
+    />
+
+    <!-- Excel 导入：仅新建任务，校验失败展示逐行错误报告 -->
+    <TaskImportDialog
+      v-model="importDialogVisible"
+      :project-id="projectId()"
+      @imported="handleExcelImported"
     />
   </div>
 </template>

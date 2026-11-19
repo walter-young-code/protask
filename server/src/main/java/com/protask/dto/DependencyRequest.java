@@ -4,7 +4,7 @@ import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
 /**
- * 创建任务依赖请求（当前仅支持 FS 完成-开始）。
+ * 创建任务依赖请求（支持 FS/SS/FF/SF 四种类型）。
  */
 @Data
 public class DependencyRequest {
@@ -15,9 +15,9 @@ public class DependencyRequest {
     @NotNull(message = "{validation.dependencySuccessor.notNull}")
     private Long successorId;
 
-    /** 依赖类型，缺省 FS */
+    /** 依赖类型 FS/SS/FF/SF，缺省 FS */
     private String type;
 
-    /** 延迟天数，缺省 0 */
+    /** 延迟天数 [-365, 365]，缺省 0，负数=提前量 */
     private Integer lag;
 }

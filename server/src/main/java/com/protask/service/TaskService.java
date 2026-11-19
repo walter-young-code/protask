@@ -32,6 +32,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -437,6 +438,9 @@ public class TaskService {
         copy.setType(BlockTypes.CARD);
         copy.setTitle(resolveCopyTitle(source.getTitle()));
         copy.setMilestone(source.getMilestone());
+        // 计划模式/工期随副本保留；开始约束不复制（副本以自身日期为锚点）
+        copy.setScheduleMode(source.getScheduleMode());
+        copy.setDurationDays(source.getDurationDays());
         Map<String, Object> sourceFields = source.getFields() != null
                 ? source.getFields() : Map.of();
         Map<String, Object> fields = new HashMap<>(sourceFields);
@@ -470,6 +474,7 @@ public class TaskService {
 
     /**
      * 更新任务卡片（需卡片管理权限），properties 整体替换。
+     * WBS 项目额外支持计划模式/工期/约束设置，保存后触发自动排程传播。
      */
     @Transactional(rollbackFor = Exception.class)
     public TaskVO updateTask(Long userId, Long taskId, TaskRequest request) {
@@ -477,6 +482,7 @@ public class TaskService {
         permissionService.checkPermission(userId, card.getProjectId(),
                 ProjectPermission.MANAGE_PROJECT_CARDS);
 
+        Map<String, Object> oldProps = currentProperties(card);
         card.setTitle(request.getTitle());
         Map<String, Object> fields = new HashMap<>(card.getFields() != null
                 ? card.getFields() : Map.of());
@@ -485,8 +491,14 @@ public class TaskService {
             fields.put("icon", request.getIcon());
         }
         fields.put("description", request.getDescription() != null ? request.getDescription() : "");
-        fields.put("properties", request.getProperties() != null ? request.getProperties() : Map.of());
+        Map<String, Object> newProps = new HashMap<>(request.getProperties() != null
+                ? request.getProperties() : Map.of());
+        fields.put("properties", newProps);
         card.setFields(fields);
+        boolean wbs = ganttProjectService.hasWbs(card.getProjectId());
+        if (wbs) {
+            applyScheduleSettings(card, request, oldProps, newProps);
+        }
         // 里程碑约束：仅起止同日可标记（跨日/未排期拒绝）；日期改为跨日时自动清除既有标记
         boolean sameDay = sameDayScheduled(fields);
         if (request.getMilestone() != null) {
@@ -508,8 +520,76 @@ public class TaskService {
         }
         card.setModifiedBy(userId);
         blockMapper.updateById(card);
+        if (wbs) {
+            ganttProjectService.rescheduleAutoTasks(card.getProjectId());
+            // 引擎可能回写本任务日期（自动任务约束吸附），重读保证 VO 一致
+            card = blockMapper.selectById(taskId);
+        }
         return toVO(card, nicknameMap(List.of(card)),
                 attachmentCountMap(List.of(taskId)).getOrDefault(taskId, 0L));
+    }
+
+    /**
+     * 排程设置（仅 WBS 项目）：计划模式/显式工期/清除约束，及自动任务日期编辑解释——
+     * 开始变更=设「不得早于」约束，截止变更=推导工期（两规则独立：
+     * 整体拖拽移动=设约束且工期不变；右端拉伸=仅改工期不钉住开始）。
+     */
+    private void applyScheduleSettings(Block card, TaskRequest request,
+                                       Map<String, Object> oldProps, Map<String, Object> newProps) {
+        if (request.getScheduleMode() != null) {
+            String mode = request.getScheduleMode();
+            if (!GanttProjectService.MODE_AUTO.equals(mode) && !GanttProjectService.MODE_MANUAL.equals(mode)) {
+                throw new BusinessException(ResultCode.BAD_REQUEST, "task.scheduleModeInvalid");
+            }
+            card.setScheduleMode(mode);
+        }
+        if (Boolean.TRUE.equals(request.getClearConstraint())) {
+            card.setStartConstraint(null);
+        }
+        if (GanttProjectService.MODE_AUTO.equals(card.getScheduleMode())) {
+            String oldStart = dateKey(oldProps.get(GanttProjectService.PROP_START_DATE));
+            String oldDue = dateKey(oldProps.get(GanttProjectService.PROP_DUE_DATE));
+            LocalDate newStart = parseDateKey(dateKey(newProps.get(GanttProjectService.PROP_START_DATE)));
+            LocalDate newDue = parseDateKey(dateKey(newProps.get(GanttProjectService.PROP_DUE_DATE)));
+            String newStartKey = dateKey(newProps.get(GanttProjectService.PROP_START_DATE));
+            String newDueKey = dateKey(newProps.get(GanttProjectService.PROP_DUE_DATE));
+            if (newStart != null && !newStartKey.equals(oldStart)) {
+                card.setStartConstraint(newStart);
+            }
+            if (newStart != null && newDue != null && !newDueKey.equals(oldDue)) {
+                long days = ChronoUnit.DAYS.between(newStart, newDue) + 1;
+                card.setDurationDays((int) Math.max(1, Math.min(days, GanttProjectService.DURATION_LIMIT)));
+            }
+        }
+        if (request.getDurationDays() != null) {
+            int duration = request.getDurationDays();
+            if (duration < 1 || duration > GanttProjectService.DURATION_LIMIT) {
+                throw new BusinessException(ResultCode.BAD_REQUEST, "task.durationInvalid");
+            }
+            // 里程碑工期恒 0，忽略显式工期
+            if (!Boolean.TRUE.equals(card.getMilestone())) {
+                card.setDurationDays(duration);
+                // 手动任务：同步截止 = 开始 + 工期 - 1（自动任务由引擎推导）
+                if (!GanttProjectService.MODE_AUTO.equals(card.getScheduleMode())) {
+                    LocalDate start = parseDateKey(dateKey(newProps.get(GanttProjectService.PROP_START_DATE)));
+                    if (start != null) {
+                        newProps.put(GanttProjectService.PROP_DUE_DATE, start.plusDays(duration - 1L).toString());
+                    }
+                }
+            }
+        }
+    }
+
+    /** 解析日期键（非法值视为 null，不阻断保存） */
+    private LocalDate parseDateKey(String value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(value);
+        } catch (DateTimeParseException e) {
+            return null;
+        }
     }
 
     /**
@@ -537,6 +617,10 @@ public class TaskService {
             blockMapper.updateById(target);
         }
         ganttProjectService.deleteDependenciesOfTasks(card.getProjectId(), deletedIds);
+        if (ganttProjectService.hasWbs(card.getProjectId())) {
+            // 依赖移除后自动后置可能吸附到约束/锚点，重跑排程
+            ganttProjectService.rescheduleAutoTasks(card.getProjectId());
+        }
     }
 
     /**
@@ -601,6 +685,9 @@ public class TaskService {
         vo.setCreatorName(nicknames.get(card.getCreatedBy()));
         vo.setAttachmentCount(attachmentCount);
         vo.setMilestone(card.getMilestone());
+        vo.setScheduleMode(card.getScheduleMode() == null ? GanttProjectService.MODE_MANUAL : card.getScheduleMode());
+        vo.setDurationDays(card.getDurationDays());
+        vo.setStartConstraint(card.getStartConstraint());
         return vo;
     }
 

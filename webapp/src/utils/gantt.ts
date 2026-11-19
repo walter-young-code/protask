@@ -1,4 +1,4 @@
-import type { GanttScale, TaskVO } from '@/types'
+import type { DependencyType, GanttScale, TaskVO } from '@/types'
 import type { TaskTreeNode } from '@/utils/taskTree'
 
 /** 行高（每个任务一行，紧凑布局） */
@@ -333,24 +333,66 @@ function clampLast<T extends { x: number; width: number }>(items: T[], maxWidth?
 /**
  * FS 肘形连线路径：从前置条尾 (x1,y1) 到后置条首 (x2,y2)。
  * 目标在右侧时直接右-竖-右；目标在左侧（重叠/前置）时绕行行间，避免穿条。
+ * 保留为四类型通用路径的 FS 包装（finish→start）。
  */
 export function elbowPath(x1: number, y1: number, x2: number, y2: number): string {
-  // 出弯让位条尾外连接点（圆心偏移 + 半径 + 余量），避免肘弯藏进圆点
+  return dependencyPath(x1, y1, x2, y2, 'finish', 'start')
+}
+
+/** 条体锚点端：start=条首（左）/ finish=条尾（右） */
+export type BarEnd = 'start' | 'finish'
+
+/** 依赖类型 → 前置/后置锚点端（FS=尾→首、SS=首→首、FF=尾→尾、SF=首→尾） */
+export function dependencyEnds(type: DependencyType): { fromEnd: BarEnd; toEnd: BarEnd } {
+  switch (type) {
+    case 'SS': return { fromEnd: 'start', toEnd: 'start' }
+    case 'FF': return { fromEnd: 'finish', toEnd: 'finish' }
+    case 'SF': return { fromEnd: 'start', toEnd: 'finish' }
+    default: return { fromEnd: 'finish', toEnd: 'start' }
+  }
+}
+
+/** 前置/后置锚点端 → 依赖类型（拖拽落点判型用） */
+export function dependencyType(fromEnd: BarEnd, toEnd: BarEnd): DependencyType {
+  if (fromEnd === 'finish') return toEnd === 'start' ? 'FS' : 'FF'
+  return toEnd === 'start' ? 'SS' : 'SF'
+}
+
+/** 锚点横坐标：普通条 start=x / finish=x+width；里程碑两锚点均在菱形中心 */
+export function anchorX(geo: BarGeometry, end: BarEnd, pxPerDay: number): number {
+  if (geo.milestone) return geo.x + pxPerDay / 2
+  return end === 'start' ? geo.x : geo.x + geo.width
+}
+
+/**
+ * 四类型肘形连线路径：从前置锚点 (x1,y1) 到后置锚点 (x2,y2)。
+ * 出线方向由前置端决定（finish 向右 / start 向左），入线方向由后置端决定
+ * （start 从左入、箭头指右 / finish 从右入、箭头指左）；重叠/逆向时绕行行间避免穿条。
+ */
+export function dependencyPath(
+  x1: number, y1: number, x2: number, y2: number,
+  fromEnd: BarEnd, toEnd: BarEnd,
+): string {
+  const exitDir = fromEnd === 'finish' ? 1 : -1
+  const entryDir = toEnd === 'start' ? 1 : -1
+  // 出弯让位条端外连接点（圆心偏移 + 半径 + 余量），避免肘弯藏进圆点
   const out = BAR_CONNECTOR_OFFSET + BAR_CONNECTOR_RADIUS + 5
   const inn = 12
   const arrow = 7
-  if (x2 >= x1 + out + inn) {
-    const midX = x1 + out
-    return `M ${x1} ${y1} H ${midX} V ${y2} H ${x2 - arrow}`
+  const outX = x1 + exitDir * out
+  const inX = x2 - entryDir * inn
+  const tipX = x2 - entryDir * arrow
+  // 同向且入点在前后直接走 横-竖-横；否则绕行行间
+  if (exitDir === entryDir && (inX - outX) * entryDir >= 0) {
+    return `M ${x1} ${y1} H ${outX} V ${y2} H ${tipX}`
   }
   const midY = y1 + (y2 > y1 ? ROW_HEIGHT / 2 : -ROW_HEIGHT / 2)
-  const outX = x1 + out
-  const inX = x2 - inn
-  return `M ${x1} ${y1} H ${outX} V ${midY} H ${inX} V ${y2} H ${x2 - arrow}`
+  return `M ${x1} ${y1} H ${outX} V ${midY} H ${inX} V ${y2} H ${tipX}`
 }
 
-/** 连线箭头三角形顶点（指向右，尖端落在 x2,y2） */
-export function arrowPoints(x2: number, y2: number): string {
+/** 连线箭头三角形顶点（尖端落在 x2,y2；dir 指定指向左/右，缺省右） */
+export function arrowPoints(x2: number, y2: number, dir: 'left' | 'right' = 'right'): string {
   const size = 7
-  return `${x2},${y2} ${x2 - size},${y2 - size / 1.6} ${x2 - size},${y2 + size / 1.6}`
+  const baseX = dir === 'right' ? x2 - size : x2 + size
+  return `${x2},${y2} ${baseX},${y2 - size / 1.6} ${baseX},${y2 + size / 1.6}`
 }

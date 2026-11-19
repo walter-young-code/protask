@@ -3,12 +3,16 @@ import {
   BAR_CONNECTOR_OFFSET,
   BAR_CONNECTOR_RADIUS,
   addDays,
+  anchorX,
   arrowPoints,
   barGeometry,
   buildMonthSegments,
   buildTimeColumns,
   computeRange,
   dateToX,
+  dependencyEnds,
+  dependencyPath,
+  dependencyType,
   diffDays,
   durationDays,
   effectiveDates,
@@ -315,5 +319,64 @@ describe('FS 连线路径', () => {
     const points = arrowPoints(200, 54)
     expect(points.startsWith('200,54')).toBe(true)
     expect(points.split(' ')).toHaveLength(3)
+  })
+})
+
+describe('四类型依赖几何', () => {
+  it('dependencyEnds / dependencyType 四类型互逆', () => {
+    for (const type of ['FS', 'SS', 'FF', 'SF'] as const) {
+      const { fromEnd, toEnd } = dependencyEnds(type)
+      expect(dependencyType(fromEnd, toEnd)).toBe(type)
+    }
+    expect(dependencyEnds('FS')).toEqual({ fromEnd: 'finish', toEnd: 'start' })
+    expect(dependencyEnds('SS')).toEqual({ fromEnd: 'start', toEnd: 'start' })
+    expect(dependencyEnds('FF')).toEqual({ fromEnd: 'finish', toEnd: 'finish' })
+    expect(dependencyEnds('SF')).toEqual({ fromEnd: 'start', toEnd: 'finish' })
+  })
+
+  it('FS 路径与存量 elbowPath 完全一致（向后兼容）', () => {
+    expect(dependencyPath(100, 18, 300, 54, 'finish', 'start')).toBe(elbowPath(100, 18, 300, 54))
+    expect(dependencyPath(300, 18, 100, 54, 'finish', 'start')).toBe(elbowPath(300, 18, 100, 54))
+  })
+
+  it('SS：条首向左出线，入点在目标条首左侧（箭头指右），逆向时绕行', () => {
+    const path = dependencyPath(100, 18, 300, 54, 'start', 'start')
+    const firstH = Number(/H (-?\d+)/.exec(path)?.[1])
+    expect(firstH).toBeLessThan(100) // 向左出线
+    expect(path.endsWith('H 293')).toBe(true) // 尖端 x2-7，箭头指右
+    expect((path.match(/V /g) ?? []).length).toBeGreaterThanOrEqual(2) // 出左入左需绕行
+  })
+
+  it('FF：条尾向右出线，入点在目标条尾右侧（箭头指左），逆向时绕行', () => {
+    const path = dependencyPath(100, 18, 300, 54, 'finish', 'finish')
+    const firstH = Number(/H (-?\d+)/.exec(path)?.[1])
+    expect(firstH).toBeGreaterThan(100) // 向右出线
+    expect(path.endsWith('H 307')).toBe(true) // 尖端 x2+7，箭头指左
+    expect((path.match(/V /g) ?? []).length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('SF：目标在左侧时同向直连（左出左入，横-竖-横）', () => {
+    const path = dependencyPath(300, 18, 100, 54, 'start', 'finish')
+    expect((path.match(/V /g) ?? []).length).toBe(1) // 无需绕行
+    expect(path.endsWith('H 107')).toBe(true) // 入点在条尾右侧，箭头指左
+  })
+
+  it('anchorX：普通条 start=x / finish=x+width，里程碑两锚点均在菱形中心', () => {
+    const rangeStart = parseDate('2026-03-01') as Date
+    const bar = barGeometry(leaf(1, { startDate: '2026-03-02', dueDate: '2026-03-04' }), 'startDate', 'dueDate', rangeStart, 10)
+    expect(anchorX(bar!, 'start', 10)).toBe(10)
+    expect(anchorX(bar!, 'finish', 10)).toBe(40)
+    const ms = barGeometry(leaf(2, { startDate: '2026-03-02', dueDate: '2026-03-02' }, { milestone: true }), 'startDate', 'dueDate', rangeStart, 10)
+    expect(anchorX(ms!, 'start', 10)).toBe(15)
+    expect(anchorX(ms!, 'finish', 10)).toBe(15)
+  })
+
+  it('arrowPoints 方向参数：右指尖端在右，左指尖端在左', () => {
+    const right = arrowPoints(200, 54, 'right').split(' ').map((p) => Number(p.split(',')[0]))
+    expect(right[1]).toBeLessThan(200)
+    expect(right[2]).toBeLessThan(200)
+    const left = arrowPoints(200, 54, 'left').split(' ').map((p) => Number(p.split(',')[0]))
+    expect(left[1]).toBeGreaterThan(200)
+    expect(left[2]).toBeGreaterThan(200)
   })
 })

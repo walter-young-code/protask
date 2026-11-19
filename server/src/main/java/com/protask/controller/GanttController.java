@@ -2,6 +2,7 @@ package com.protask.controller;
 
 import cn.dev33.satoken.stp.StpUtil;
 import com.protask.common.Result;
+import com.protask.dto.DependencyPatchRequest;
 import com.protask.dto.DependencyRequest;
 import com.protask.dto.DependencyVO;
 import com.protask.service.GanttProjectService;
@@ -12,6 +13,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -21,7 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 /**
- * WBS 项目增强接口：FS 依赖管理与 MS Project(MSPDI) 导出。
+ * WBS 项目增强接口：四类型依赖管理（FS/SS/FF/SF）与 MS Project(MSPDI) 导出。
  * 全部接口受 WBS 门禁约束（项目属性模板含内置 wbs 属性）。
  */
 @RestController
@@ -37,11 +39,18 @@ public class GanttController {
         return Result.ok(ganttProjectService.listDependencies(StpUtil.getLoginIdAsLong(), projectId));
     }
 
-    /** 创建 FS 依赖（自依赖/重复/环拦截） */
+    /** 创建依赖（类型/lag 校验，自依赖/重复/环拦截） */
     @PostMapping("/projects/{projectId}/dependencies")
     public Result<DependencyVO> createDependency(@PathVariable Long projectId,
                                                  @Valid @RequestBody DependencyRequest request) {
         return Result.ok(ganttProjectService.createDependency(StpUtil.getLoginIdAsLong(), projectId, request));
+    }
+
+    /** 修改依赖类型/lag */
+    @PatchMapping("/dependencies/{id}")
+    public Result<DependencyVO> updateDependency(@PathVariable Long id,
+                                                 @RequestBody DependencyPatchRequest request) {
+        return Result.ok(ganttProjectService.updateDependency(StpUtil.getLoginIdAsLong(), id, request));
     }
 
     /** 删除依赖 */

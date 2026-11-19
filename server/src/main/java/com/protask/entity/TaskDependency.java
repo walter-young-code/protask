@@ -27,7 +27,7 @@ public class TaskDependency {
     /** 后置任务ID */
     private Long successorId;
 
-    /** 依赖类型: FS/SS/FF/SF（当前仅支持 FS） */
+    /** 依赖类型: FS/SS/FF/SF */
     private String type;
 
     /** 延迟天数（lag 为 MySQL 8.0 保留字，列名需反引号包裹） */

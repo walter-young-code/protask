@@ -2,7 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { appMessage } from '@/utils/appMessage'
-import { Check, CopyDocument, Delete, Document, Download, MoreFilled, Position, Upload, View } from '@element-plus/icons-vue'
+import { CopyDocument, Delete, Document, Download, MoreFilled, Position, Setting, Upload, View } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -13,9 +13,9 @@ import type { AttachmentVO } from '@/api/attachment'
 import { useSiteStore } from '@/stores/site'
 import PropertyValueInput from '@/components/PropertyValueInput.vue'
 import IconPicker from '@/components/IconPicker.vue'
+import TaskSettingsDialog from '@/components/TaskSettingsDialog.vue'
 import { WBS_PROPERTY_ID, START_DATE_PROPERTY_ID, DUE_DATE_PROPERTY_ID } from '@/utils/meta'
-import { buildParentOptions } from '@/utils/taskTree'
-import type { BlockVO, CardProperty, ProjectMemberVO, TaskVO } from '@/types'
+import type { BlockVO, CardProperty, DependencyVO, ProjectMemberVO, TaskVO } from '@/types'
 
 const props = defineProps<{
   modelValue: boolean
@@ -37,12 +37,16 @@ const props = defineProps<{
   tasks?: TaskVO[]
   /** WBS 门禁：项目是否添加了 WBS 编码属性 */
   hasWbs?: boolean
+  /** 项目依赖列表（任务设置弹窗的前置/后置依赖来源，仅 WBS 项目用） */
+  dependencies?: DependencyVO[]
 }>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void
   /** 任务保存或删除后通知容器刷新，携带更新后的任务（如有） */
   (e: 'saved', task?: TaskVO): void
+  /** 任务设置弹窗增删改依赖后通知容器刷新依赖列表 */
+  (e: 'dependenciesChanged'): void
 }>()
 
 const { t } = useI18n()
@@ -62,30 +66,23 @@ const form = reactive({
   parentTaskId: null as number | null,
   /** 里程碑标记（仅 WBS 项目展示开关） */
   milestone: false,
+  /** 计划模式（仅 WBS 项目，设置弹窗 patch 写入后随保存下发） */
+  scheduleMode: 'manual' as 'manual' | 'auto',
   /** 动态属性值（按项目 cardProperties 模板全量渲染） */
   propertyValues: {} as Record<string, unknown>,
 })
 
-/** 父任务候选（排除自身与子孙防环，带深度缩进） */
-const parentOptions = computed(() => buildParentOptions(props.tasks ?? [], props.task?.id))
+/** 一次性排程补丁（设置弹窗即改即存）：显式工期/清除约束仅随下一次保存下发，避免每次保存都钉住工期 */
+const pendingDuration = ref<number | null>(null)
+const pendingClearConstraint = ref(false)
 
-/** 里程碑开关禁用原因：摘要任务或起止非同日（未排期/跨日）；空串=可用 */
-const milestoneDisabledReason = computed(() => {
-  if ((props.task?.childCount ?? 0) > 0) return t('task.milestoneSummaryHint')
-  const s = props.task?.properties?.[START_DATE_PROPERTY_ID]
-  const e = props.task?.properties?.[DUE_DATE_PROPERTY_ID]
-  const sameDay =
-    typeof s === 'string' && typeof e === 'string' && s.length >= 10 && s.slice(0, 10) === e.slice(0, 10)
-  return sameDay ? '' : t('task.milestoneSameDayHint')
-})
+/** 自动计划叶子任务：截止日期由引擎推导（禁用 picker），开始日期编辑解释为约束 */
+const isAutoTask = computed(() =>
+  props.hasWbs === true && props.task?.scheduleMode === 'auto' && (props.task?.childCount ?? 0) === 0,
+)
 
-/** 父任务下拉值：0 代表「无父任务」（ElOption 不接受 null），与表单 null 双向映射 */
-const parentSelectValue = computed<number>({
-  get: () => form.parentTaskId ?? 0,
-  set: (v) => {
-    form.parentTaskId = v ? v : null
-  },
-})
+/** 任务设置弹窗（收纳父任务/里程碑/依赖等甘特专属设置，仅 WBS 项目） */
+const settingsVisible = ref(false)
 
 /** 可编辑的动态属性（排除只读 WBS 编码） */
 const editableProperties = computed(() =>
@@ -299,7 +296,7 @@ const initialSnapshot = ref('')
 
 /** 表单当前状态序列化（标题/描述/属性值任一变化都会改变快照） */
 function snapshotForm(): string {
-  return JSON.stringify({ title: form.title, icon: form.icon, description: form.description, parentTaskId: form.parentTaskId, milestone: form.milestone, propertyValues: form.propertyValues })
+  return JSON.stringify({ title: form.title, icon: form.icon, description: form.description, parentTaskId: form.parentTaskId, milestone: form.milestone, scheduleMode: form.scheduleMode, pendingDuration: pendingDuration.value, pendingClearConstraint: pendingClearConstraint.value, propertyValues: form.propertyValues })
 }
 
 /** 是否有未保存修改（预览模式下改动标题/属性后据此显示保存按钮） */
@@ -468,6 +465,9 @@ function initForm() {
   form.icon = props.task.icon ?? ''
   form.parentTaskId = props.task.parentTaskId ?? null
   form.milestone = props.task.milestone ?? false
+  form.scheduleMode = props.task.scheduleMode ?? 'manual'
+  pendingDuration.value = null
+  pendingClearConstraint.value = false
   form.propertyValues = {}
   for (const prop of props.cardProperties ?? []) {
     form.propertyValues[prop.id] = props.task.properties?.[prop.id] ?? ''
@@ -589,10 +589,27 @@ async function handleSave() {
           ([id, value]) => id !== WBS_PROPERTY_ID && !isEmptyValue(value),
         ),
       ),
-      // 父任务语义：更新 null→0(设根)、其余=指定父（仅 WBS 项目下发）
-      ...(props.hasWbs ? { parentTaskId: form.parentTaskId ?? 0 } : {}),
+      // 父任务语义：更新 null→0(设根)、其余=指定父；排程设置仅 WBS 项目下发
+      ...(props.hasWbs
+        ? {
+            parentTaskId: form.parentTaskId ?? 0,
+            scheduleMode: form.scheduleMode,
+            ...(pendingDuration.value != null ? { durationDays: pendingDuration.value } : {}),
+            ...(pendingClearConstraint.value ? { clearConstraint: true } : {}),
+          }
+        : {}),
       milestone: form.milestone,
     })
+    pendingDuration.value = null
+    pendingClearConstraint.value = false
+    // 引擎可能吸附日期（自动任务约束/前置推导）：以返回 VO 为准回写表单，保证弹窗内可见
+    if (updated) {
+      form.scheduleMode = updated.scheduleMode ?? 'manual'
+      if (updated.properties) {
+        form.propertyValues[START_DATE_PROPERTY_ID] = updated.properties[START_DATE_PROPERTY_ID] ?? ''
+        form.propertyValues[DUE_DATE_PROPERTY_ID] = updated.properties[DUE_DATE_PROPERTY_ID] ?? ''
+      }
+    }
     initialSnapshot.value = snapshotForm() // 保存成功后重拍快照，未保存标记复位
     appMessage.success(t('task.updated'))
     emit('saved', updated)
@@ -634,24 +651,30 @@ async function handleCopyTask() {
   emit('saved')
 }
 
-/** 头部“更多”菜单命令分发（复制 / 删除） */
+/** 头部“更多”菜单命令分发（复制 / 删除 / 任务设置） */
 function handleHeaderCommand(command: string) {
   if (command === 'copy') {
     void handleCopyTask()
   } else if (command === 'delete') {
     void handleDeleteTask()
-  } else if (command === 'typeNormal') {
-    selectMilestoneType(false)
-  } else if (command === 'typeMilestone') {
-    selectMilestoneType(true)
+  } else if (command === 'settings') {
+    settingsVisible.value = true
   }
 }
 
-/** 「更多」菜单切换任务类型（与甘特几何体点击菜单同语义）：无变化不请求，非同日禁设里程碑 */
-function selectMilestoneType(milestone: boolean) {
-  if (milestone && milestoneDisabledReason.value) return
-  if (form.milestone === milestone) return
-  form.milestone = milestone
+/** 任务设置弹窗局部更新（父任务/里程碑/排程）：写入表单后走统一保存链路 */
+function handleSettingsPatch(patch: {
+  parentTaskId?: number | null
+  milestone?: boolean
+  scheduleMode?: 'manual' | 'auto'
+  durationDays?: number
+  clearConstraint?: boolean
+}) {
+  if (patch.parentTaskId !== undefined) form.parentTaskId = patch.parentTaskId
+  if (patch.milestone !== undefined) form.milestone = patch.milestone
+  if (patch.scheduleMode !== undefined) form.scheduleMode = patch.scheduleMode
+  if (patch.durationDays !== undefined) pendingDuration.value = patch.durationDays
+  if (patch.clearConstraint) pendingClearConstraint.value = true
   void handleSave()
 }
 
@@ -864,17 +887,10 @@ function formatTime(value?: string) {
               >
                 {{ t('common.delete') }}
               </el-dropdown-item>
-              <!-- WBS 项目：任务类型切换（与甘特条体点击菜单同语义），当前项勾选 -->
-              <template v-if="props.hasWbs">
-                <el-dropdown-item command="typeNormal" divided>
-                  <el-icon class="detail-type-check" :class="{ invisible: form.milestone === true }"><Check /></el-icon>
-                  {{ t('gantt.typeNormal') }}
-                </el-dropdown-item>
-                <el-dropdown-item command="typeMilestone" :disabled="milestoneDisabledReason !== ''">
-                  <el-icon class="detail-type-check" :class="{ invisible: form.milestone !== true }"><Check /></el-icon>
-                  <span :title="milestoneDisabledReason || undefined">{{ t('gantt.typeMilestone') }}</span>
-                </el-dropdown-item>
-              </template>
+              <!-- WBS 项目：任务设置入口（父任务/里程碑/依赖统一收纳） -->
+              <el-dropdown-item v-if="props.hasWbs" command="settings" divided :icon="Setting">
+                {{ t('task.settings') }}
+              </el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -913,29 +929,6 @@ function formatTime(value?: string) {
         :disabled="!editable"
         @keydown.enter="handlePropertyEnter"
       >
-        <!-- WBS 项目：父任务选择（排除自身与子孙防环），选中即保存 -->
-        <el-form-item v-if="props.hasWbs" :label="t('task.parentLabel')" class="property-item">
-          <el-select
-            v-model="parentSelectValue"
-            clearable
-            filterable
-            :placeholder="t('task.parentNone')"
-            class="parent-select"
-            @change="handleSave"
-          >
-            <el-option :value="0" :label="t('task.parentNone')" />
-            <el-option
-              v-for="opt in parentOptions"
-              :key="opt.id"
-              :value="opt.id"
-              :label="(opt.wbs ? opt.wbs + ' ' : '') + opt.title"
-            >
-              <span :style="{ paddingLeft: `${opt.depth * 14}px` }">
-                <span class="parent-wbs">{{ opt.wbs }}</span> {{ opt.title }}
-              </span>
-            </el-option>
-          </el-select>
-        </el-form-item>
         <el-form-item
           v-for="prop in editableProperties"
           :key="prop.id"
@@ -946,8 +939,15 @@ function formatTime(value?: string) {
             :property="prop"
             :model-value="form.propertyValues[prop.id]"
             :member-map="props.memberMap"
+            :disabled="isAutoTask && prop.id === DUE_DATE_PROPERTY_ID"
             @update:model-value="onPropertyValueChange(prop, $event)"
           />
+          <p v-if="isAutoTask && prop.id === DUE_DATE_PROPERTY_ID" class="property-schedule-hint">
+            {{ t('task.settingsAutoDueHint') }}
+          </p>
+          <p v-else-if="isAutoTask && prop.id === START_DATE_PROPERTY_ID" class="property-schedule-hint">
+            {{ t('task.settingsAutoStartHint') }}
+          </p>
         </el-form-item>
         <el-empty
           v-if="editableProperties.length === 0 && !props.hasWbs"
@@ -1214,6 +1214,19 @@ function formatTime(value?: string) {
         class="comment-no-permission"
       />
     </div>
+
+    <!-- 任务设置弹窗：父任务/里程碑即改即存（patch→表单→保存），依赖操作直连 API -->
+    <TaskSettingsDialog
+      v-if="task && props.hasWbs"
+      v-model="settingsVisible"
+      :task="task"
+      :project-id="projectId"
+      :tasks="tasks ?? []"
+      :editable="editable"
+      :dependencies="dependencies ?? []"
+      @patch="handleSettingsPatch"
+      @dependencies-changed="emit('dependenciesChanged')"
+    />
   </el-dialog>
 </template>
 
@@ -1245,14 +1258,6 @@ function formatTime(value?: string) {
 
 .detail-more-btn:hover {
   color: var(--el-color-primary);
-}
-
-.detail-type-check {
-  margin-right: 6px;
-}
-
-.detail-type-check.invisible {
-  visibility: hidden;
 }
 
 .detail-title-row {
@@ -1324,16 +1329,12 @@ function formatTime(value?: string) {
   padding-bottom: 16px;
 }
 
-.parent-select {
-  width: 100%;
-  max-width: 340px;
-}
-
-.parent-wbs {
-  color: var(--app-text-secondary);
+/* 自动计划日期提示（截止由工期推导/开始编辑设为约束） */
+.property-schedule-hint {
+  margin: 4px 0 0;
   font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  margin-right: 4px;
+  color: var(--app-text-secondary);
+  line-height: 1.5;
 }
 
 .property-form :deep(.el-input__wrapper),

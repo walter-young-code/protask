@@ -350,6 +350,12 @@ export interface TaskVO {
   childCount?: number
   /** 里程碑标记（false=普通任务,true=里程碑；甘特菱形渲染消费） */
   milestone?: boolean
+  /** 计划模式：manual=手动计划（日期自由编辑）/ auto=自动计划（前置驱动排程），仅 WBS 项目 */
+  scheduleMode?: 'manual' | 'auto'
+  /** 显式工期（自然日含首日），null=按起止日期推导；里程碑恒 0 */
+  durationDays?: number | null
+  /** 开始约束（不得早于，SNET）：自动任务实际开始 = max(前置推导, 约束) */
+  startConstraint?: string | null
 }
 
 /** 创建/更新任务请求（properties 整体替换卡片属性值） */
@@ -364,12 +370,21 @@ export interface TaskRequest {
   parentTaskId?: number | null
   /** 里程碑标记（更新 null=不修改） */
   milestone?: boolean
+  /** 计划模式（仅 WBS 项目生效，null=不修改） */
+  scheduleMode?: 'manual' | 'auto'
+  /** 显式工期（1~3650 自然日，null=不修改；里程碑忽略） */
+  durationDays?: number
+  /** true=清除开始约束（恢复纯前置驱动） */
+  clearConstraint?: boolean
 }
 
 /** 任务同级重排方向（上移/下移，WBS 随之重编号） */
 export type TaskMoveDirection = 'up' | 'down'
 
-/** 任务依赖视图（当前仅 FS 完成-开始） */
+/** 依赖类型（对齐 MS Project 四种链接）：FS 完成-开始 / SS 开始-开始 / FF 完成-完成 / SF 开始-完成 */
+export type DependencyType = 'FS' | 'SS' | 'FF' | 'SF'
+
+/** 任务依赖视图 */
 export interface DependencyVO {
   id: number
   projectId: number
@@ -377,9 +392,9 @@ export interface DependencyVO {
   predecessorId: number
   /** 后置任务 ID */
   successorId: number
-  /** 依赖类型: FS/SS/FF/SF（当前仅 FS） */
-  type: string
-  /** 延迟天数 */
+  /** 依赖类型: FS/SS/FF/SF */
+  type: DependencyType
+  /** 延迟天数（负数=提前量） */
   lag: number
 }
 
@@ -388,9 +403,29 @@ export interface DependencyRequest {
   predecessorId: number
   successorId: number
   /** 依赖类型，缺省 FS */
-  type?: string
-  /** 延迟天数，缺省 0 */
+  type?: DependencyType
+  /** 延迟天数 [-365, 365]，缺省 0 */
   lag?: number
+}
+
+/** 修改任务依赖请求（仅类型/lag，缺省表示不修改） */
+export interface DependencyPatchRequest {
+  type?: DependencyType
+  lag?: number
+}
+
+/** Excel 导入逐行错误（row 为 Excel 行号，含表头行） */
+export interface TaskImportErrorVO {
+  row: number
+  message: string
+}
+
+/** Excel 导入结果：errors 非空表示校验失败、未写入任何任务 */
+export interface TaskImportResultVO {
+  created: number
+  dependencyCount: number
+  errors: TaskImportErrorVO[]
+  ignoredColumns: string[]
 }
 
 /** 仪表盘任务列表项（跨项目轻量字段） */

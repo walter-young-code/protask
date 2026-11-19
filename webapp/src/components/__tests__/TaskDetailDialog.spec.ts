@@ -6,6 +6,8 @@ import ElementPlus from 'element-plus'
 import { nextTick } from 'vue'
 import zhCN from '@/locales/zh-CN'
 import TaskDetailDialog from '@/components/TaskDetailDialog.vue'
+import TaskSettingsDialog from '@/components/TaskSettingsDialog.vue'
+import PropertyValueInput from '@/components/PropertyValueInput.vue'
 import * as taskApi from '@/api/task'
 
 vi.mock('@/api/task', () => ({
@@ -23,6 +25,12 @@ vi.mock('@/api/attachment', () => ({
   deleteAttachment: vi.fn(),
   previewAttachment: vi.fn(),
   downloadAttachment: vi.fn(),
+}))
+vi.mock('@/api/gantt', () => ({
+  listDependencies: vi.fn().mockResolvedValue([]),
+  createDependency: vi.fn(),
+  updateDependency: vi.fn(),
+  deleteDependency: vi.fn(),
 }))
 
 const task = {
@@ -121,8 +129,8 @@ describe('TaskDetailDialog WBS 编码前缀于名称', () => {
   })
 })
 
-describe('TaskDetailDialog 里程碑类型菜单', () => {
-  function mountMilestone(taskExtra: Record<string, unknown>, hasWbs = true) {
+describe('TaskDetailDialog 任务设置入口', () => {
+  function mountWbsTask(taskExtra: Record<string, unknown>, hasWbs = true) {
     const i18n = createI18n({ legacy: false, locale: 'zh-CN', messages: { 'zh-CN': zhCN } })
     return mount(TaskDetailDialog, {
       props: {
@@ -141,13 +149,15 @@ describe('TaskDetailDialog 里程碑类型菜单', () => {
         editable: true,
         commentable: true,
         hasWbs,
+        tasks: [],
+        dependencies: [],
       },
       global: { plugins: [createPinia(), i18n, ElementPlus] },
       attachTo: document.body,
     })
   }
 
-  async function open(wrapper: ReturnType<typeof mountMilestone>) {
+  async function open(wrapper: ReturnType<typeof mountWbsTask>) {
     await wrapper.setProps({ modelValue: true })
     await nextTick()
     await nextTick()
@@ -168,52 +178,173 @@ describe('TaskDetailDialog 里程碑类型菜单', () => {
     })
   }
 
-  it('WBS 项目「更多」渲染类型菜单，非 WBS 不渲染', async () => {
-    const wrapper = mountMilestone({})
+  it('WBS 项目「更多」渲染任务设置项（不再有类型两项），非 WBS 不渲染', async () => {
+    const wrapper = mountWbsTask({})
     await open(wrapper)
     const texts = (await openMore()).map((i) => i.textContent || '')
-    expect(texts.some((t) => t.includes('普通任务'))).toBe(true)
-    expect(texts.some((t) => t.includes('里程碑'))).toBe(true)
+    expect(texts.some((t) => t.includes('任务设置'))).toBe(true)
+    expect(texts.some((t) => t.includes('普通任务'))).toBe(false)
+    expect(texts.some((t) => t.includes('里程碑'))).toBe(false)
     wrapper.unmount()
 
-    const plain = mountMilestone({}, false)
+    const plain = mountWbsTask({}, false)
     await open(plain)
     const plainTexts = (await openMore()).map((i) => i.textContent || '')
-    expect(plainTexts.some((t) => t.includes('里程碑'))).toBe(false)
+    expect(plainTexts.some((t) => t.includes('任务设置'))).toBe(false)
     plain.unmount()
   })
 
-  it('摘要任务（childCount>0）里程碑项禁用', async () => {
-    const wrapper = mountMilestone({ childCount: 2 })
+  it('属性区不再渲染父任务选择行（已移入任务设置）', async () => {
+    const wrapper = mountWbsTask({})
     await open(wrapper)
-    const ms = (await openMore()).find((i) => (i.textContent || '').includes('里程碑')) as HTMLElement
-    expect(ms).toBeTruthy()
-    expect(ms.classList.contains('is-disabled')).toBe(true)
+    const labels = [...document.querySelectorAll('.property-form .el-form-item__label')].map((l) => l.textContent || '')
+    expect(labels.some((l) => l.includes('父任务'))).toBe(false)
     wrapper.unmount()
   })
 
-  it('起止跨日任务里程碑项禁用', async () => {
-    const wrapper = mountMilestone({
-      properties: { startDate: '2026-11-01', dueDate: '2026-11-14' },
-    })
+  it('点击任务设置打开设置弹窗', async () => {
+    const wrapper = mountWbsTask({})
     await open(wrapper)
-    const ms = (await openMore()).find((i) => (i.textContent || '').includes('里程碑')) as HTMLElement
-    expect(ms.classList.contains('is-disabled')).toBe(true)
+    const item = (await openMore()).find((i) => (i.textContent || '').includes('任务设置')) as HTMLElement
+    item.click()
+    await nextTick()
+    await new Promise((r) => setTimeout(r, 100))
+    expect(document.querySelector('.settings-body')).toBeTruthy()
     wrapper.unmount()
   })
 
-  it('选择里程碑即保存且 payload 携带 milestone', async () => {
+  it('设置弹窗 patch 写入表单并保存：payload 携带 milestone / parentTaskId', async () => {
     const updateTask = vi.mocked(taskApi.updateTask)
     updateTask.mockResolvedValue({ id: 3, title: 'M1' } as never)
-    const wrapper = mountMilestone({})
+    const wrapper = mountWbsTask({})
     await open(wrapper)
-    const ms = (await openMore()).find((i) => (i.textContent || '').includes('里程碑')) as HTMLElement
-    ms.click()
-    await nextTick()
+    const settings = wrapper.findComponent(TaskSettingsDialog)
+    settings.vm.$emit('patch', { milestone: true })
     await new Promise((r) => setTimeout(r, 0))
-    expect(updateTask).toHaveBeenCalled()
-    const payload = updateTask.mock.calls.at(-1)?.[1] as { milestone?: boolean }
+    let payload = updateTask.mock.calls.at(-1)?.[1] as { milestone?: boolean; parentTaskId?: number }
     expect(payload.milestone).toBe(true)
+    settings.vm.$emit('patch', { parentTaskId: 9 })
+    await new Promise((r) => setTimeout(r, 0))
+    payload = updateTask.mock.calls.at(-1)?.[1] as { milestone?: boolean; parentTaskId?: number }
+    expect(payload.parentTaskId).toBe(9)
+    expect(payload.milestone).toBe(true) // 局部更新不丢失前一次 patch
+    wrapper.unmount()
+  })
+})
+
+describe('TaskDetailDialog 排程设置透传与自动任务日期语义', () => {
+  const dateProps = [
+    { id: 'startDate', name: '开始日期', type: 'date' },
+    { id: 'dueDate', name: '截止日期', type: 'date' },
+  ] as never
+
+  function mountSchedule(taskExtra: Record<string, unknown>) {
+    const i18n = createI18n({ legacy: false, locale: 'zh-CN', messages: { 'zh-CN': zhCN } })
+    return mount(TaskDetailDialog, {
+      props: {
+        modelValue: false,
+        task: {
+          id: 4,
+          title: '自动任务',
+          description: '',
+          icon: '',
+          properties: { startDate: '2026-11-01', dueDate: '2026-11-03' },
+          ...taskExtra,
+        } as never,
+        projectId: 1,
+        cardProperties: dateProps,
+        editable: true,
+        commentable: true,
+        hasWbs: true,
+        tasks: [],
+        dependencies: [],
+      },
+      global: { plugins: [createPinia(), i18n, ElementPlus] },
+      attachTo: document.body,
+    })
+  }
+
+  async function openSchedule(wrapper: ReturnType<typeof mountSchedule>) {
+    await wrapper.setProps({ modelValue: true })
+    await nextTick()
+    await nextTick()
+  }
+
+  it('设置 patch 透传保存：scheduleMode 常驻，durationDays/clearConstraint 一次性下发', async () => {
+    const updateTask = vi.mocked(taskApi.updateTask)
+    updateTask.mockResolvedValue({
+      id: 4,
+      title: '自动任务',
+      scheduleMode: 'auto',
+      properties: { startDate: '2026-11-01', dueDate: '2026-11-03' },
+    } as never)
+    const wrapper = mountSchedule({})
+    await openSchedule(wrapper)
+    const settings = wrapper.findComponent(TaskSettingsDialog)
+
+    settings.vm.$emit('patch', { scheduleMode: 'auto' })
+    await new Promise((r) => setTimeout(r, 0))
+    let payload = updateTask.mock.calls.at(-1)?.[1] as unknown as Record<string, unknown>
+    expect(payload.scheduleMode).toBe('auto')
+    expect(payload.durationDays).toBeUndefined()
+
+    settings.vm.$emit('patch', { durationDays: 5 })
+    await new Promise((r) => setTimeout(r, 0))
+    payload = updateTask.mock.calls.at(-1)?.[1] as unknown as Record<string, unknown>
+    expect(payload.durationDays).toBe(5)
+    expect(payload.scheduleMode).toBe('auto')
+
+    // 工期补丁一次性：后续普通保存不再钉住工期
+    settings.vm.$emit('patch', { milestone: false })
+    await new Promise((r) => setTimeout(r, 0))
+    payload = updateTask.mock.calls.at(-1)?.[1] as unknown as Record<string, unknown>
+    expect(payload.durationDays).toBeUndefined()
+
+    settings.vm.$emit('patch', { clearConstraint: true })
+    await new Promise((r) => setTimeout(r, 0))
+    payload = updateTask.mock.calls.at(-1)?.[1] as unknown as Record<string, unknown>
+    expect(payload.clearConstraint).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('自动任务截止日期 picker 禁用并提示由工期推导；开始日期提示约束语义', async () => {
+    const wrapper = mountSchedule({ scheduleMode: 'auto' })
+    await openSchedule(wrapper)
+    const inputs = wrapper.findAllComponents(PropertyValueInput)
+    expect(inputs[0].props('disabled')).toBe(false)
+    expect(inputs[1].props('disabled')).toBe(true)
+    const hints = [...document.querySelectorAll('.property-schedule-hint')].map((h) => h.textContent || '')
+    expect(hints.some((h) => h.includes('由开始日期与工期推导'))).toBe(true)
+    expect(hints.some((h) => h.includes('不得早于'))).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('手动任务日期 picker 均可编辑且无排程提示', async () => {
+    const wrapper = mountSchedule({})
+    await openSchedule(wrapper)
+    const inputs = wrapper.findAllComponents(PropertyValueInput)
+    expect(inputs[0].props('disabled')).toBe(false)
+    expect(inputs[1].props('disabled')).toBe(false)
+    expect(document.querySelector('.property-schedule-hint')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('保存后按返回 VO 回写日期（引擎吸附回弹可见）', async () => {
+    const updateTask = vi.mocked(taskApi.updateTask)
+    updateTask.mockResolvedValue({
+      id: 4,
+      title: '自动任务',
+      scheduleMode: 'auto',
+      properties: { startDate: '2026-11-04', dueDate: '2026-11-06' },
+    } as never)
+    const wrapper = mountSchedule({ scheduleMode: 'auto' })
+    await openSchedule(wrapper)
+    const settings = wrapper.findComponent(TaskSettingsDialog)
+    settings.vm.$emit('patch', { scheduleMode: 'auto' })
+    await new Promise((r) => setTimeout(r, 0))
+    const inputs = wrapper.findAllComponents(PropertyValueInput)
+    expect(inputs[0].props('modelValue')).toBe('2026-11-04')
+    expect(inputs[1].props('modelValue')).toBe('2026-11-06')
     wrapper.unmount()
   })
 })

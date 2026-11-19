@@ -72,6 +72,8 @@ declare module 'vue' {
     TableView: typeof import('./components/views/TableView.vue')['default']
     TaskDetailDialog: typeof import('./components/TaskDetailDialog.vue')['default']
     TaskDialog: typeof import('./components/TaskDialog.vue')['default']
+    TaskImportDialog: typeof import('./components/TaskImportDialog.vue')['default']
+    TaskSettingsDialog: typeof import('./components/TaskSettingsDialog.vue')['default']
     TemplateSelectorDialog: typeof import('./components/TemplateSelectorDialog.vue')['default']
     ViewHeader: typeof import('./components/ViewHeader.vue')['default']
   }
