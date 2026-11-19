@@ -356,6 +356,7 @@ export default {
     created: 'View "{title}" created',
     filter: 'Filter',
     sort: 'Sort',
+    ganttToolDisabled: 'Filtering and sorting are not available in Gantt view',
     searchPlaceholder: 'Search in view',
     hiddenCount: '{count} tasks hidden by filters',
     type: {
@@ -548,7 +549,7 @@ export default {
     settingsTitle: 'Project Properties',
     settingsHint:
       'Click a property name to edit it: rename, change type, edit options, or delete. Add new properties below.',
-    wbsHint: 'Adding "WBS code" unlocks task hierarchy, the Gantt view, four dependency types (FS/SS/FF/SF) and MS Project export, and automatically binds start/due dates; these required fields cannot be deleted once enabled.',
+    wbsHint: 'Adding "WBS code" unlocks hierarchy, Gantt view, dependencies (FS/SS/FF/SF) and MS Project export, auto-binds start/due dates; required fields cannot be deleted.',
     startDateRequiresWbs: 'The start date property requires the WBS code property first',
     requiredTag: 'Required',
     requiredLockedHint: 'Required Gantt fields (WBS code, start date, due date) cannot be deleted',

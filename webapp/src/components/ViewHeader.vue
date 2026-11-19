@@ -77,6 +77,9 @@ const VIEW_TYPES = computed<ViewType[]>(() =>
 
 const activeView = computed(() => props.views.find((v) => v.id === props.activeViewId))
 
+/** 甘特图视图按 WBS 结构呈现，不支持筛选/排序（按钮置灰禁用） */
+const isGanttView = computed(() => activeView.value?.config.viewType === 'gantt')
+
 /** 本地编辑副本：确认后整体提交 */
 const filterDraft = ref<ViewFilter[]>([])
 const sortDraft = ref<ViewSort[]>([])
@@ -268,14 +271,16 @@ function notifyHidden() {
     </div>
 
     <div class="view-tools">
-      <!-- 筛选 -->
-      <el-popover width="520" trigger="click" @before-enter="openFilterPopover">
-        <template #reference>
-          <el-button text :type="filterActive ? 'primary' : ''">
-            <el-icon><Filter /></el-icon>
-            {{ t('view.filter') }}
-          </el-button>
-        </template>
+      <!-- 筛选（甘特图视图禁用） -->
+      <el-tooltip :content="t('view.ganttToolDisabled')" :disabled="!isGanttView" placement="top">
+        <span class="tool-btn-wrap">
+          <el-popover width="520" trigger="click" :disabled="isGanttView" @before-enter="openFilterPopover">
+            <template #reference>
+              <el-button text :disabled="isGanttView" :type="filterActive && !isGanttView ? 'primary' : ''">
+                <el-icon><Filter /></el-icon>
+                {{ t('view.filter') }}
+              </el-button>
+            </template>
         <div class="filter-panel">
           <div v-for="(filter, index) in filterDraft" :key="index" class="filter-row">
             <el-select
@@ -327,16 +332,20 @@ function notifyHidden() {
             </div>
           </div>
         </div>
-      </el-popover>
+          </el-popover>
+        </span>
+      </el-tooltip>
 
-      <!-- 排序 -->
-      <el-popover width="420" trigger="click" @before-enter="openSortPopover">
-        <template #reference>
-          <el-button text :type="sortActive ? 'primary' : ''">
-            <el-icon><Sort /></el-icon>
-            {{ t('view.sort') }}
-          </el-button>
-        </template>
+      <!-- 排序（甘特图视图禁用） -->
+      <el-tooltip :content="t('view.ganttToolDisabled')" :disabled="!isGanttView" placement="top">
+        <span class="tool-btn-wrap">
+          <el-popover width="420" trigger="click" :disabled="isGanttView" @before-enter="openSortPopover">
+            <template #reference>
+              <el-button text :disabled="isGanttView" :type="sortActive && !isGanttView ? 'primary' : ''">
+                <el-icon><Sort /></el-icon>
+                {{ t('view.sort') }}
+              </el-button>
+            </template>
         <div class="sort-panel">
           <div v-for="(sort, index) in sortDraft" :key="index" class="sort-row">
             <el-select v-model="sort.field" class="sort-field" :teleported="false">
@@ -364,10 +373,12 @@ function notifyHidden() {
             </el-button>
           </div>
         </div>
-      </el-popover>
+          </el-popover>
+        </span>
+      </el-tooltip>
 
-      <!-- 被筛选隐藏的任务数提示 -->
-      <el-tooltip v-if="hiddenCount > 0" :content="t('view.hiddenCount', { count: hiddenCount })">
+      <!-- 被筛选隐藏的任务数提示（甘特图视图始终展示全部任务，不提示） -->
+      <el-tooltip v-if="hiddenCount > 0 && !isGanttView" :content="t('view.hiddenCount', { count: hiddenCount })">
         <el-tag size="small" type="info" effect="plain" class="hidden-tag" @click="notifyHidden">
           {{ visibleCount }} / {{ totalCount }}
         </el-tag>
@@ -448,6 +459,15 @@ function notifyHidden() {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.tool-btn-wrap {
+  display: inline-flex;
+}
+
+/* 禁用按钮不拦截鼠标事件，使外层 tooltip 在悬停时仍可触发 */
+.tool-btn-wrap :deep(.el-button.is-disabled) {
+  pointer-events: none;
 }
 
 .hidden-tag {

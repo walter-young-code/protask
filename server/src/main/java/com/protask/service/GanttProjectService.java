@@ -24,6 +24,8 @@ import com.protask.permission.ProjectPermission;
 import lombok.RequiredArgsConstructor;
 import net.sf.mpxj.ConstraintType;
 import net.sf.mpxj.Duration;
+import net.sf.mpxj.ProjectCalendar;
+import net.sf.mpxj.ProjectCalendarHours;
 import net.sf.mpxj.ProjectFile;
 import net.sf.mpxj.Relation;
 import net.sf.mpxj.RelationType;
@@ -38,6 +40,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -627,10 +630,12 @@ public class GanttProjectService {
         file.getProjectProperties().setDefaultStartTime(LocalTime.of(8, 0));
         file.getProjectProperties().setDefaultEndTime(LocalTime.of(17, 0));
         file.getProjectProperties().setMinutesPerDay(480);
-        file.getProjectProperties().setMinutesPerWeek(2400);
+        // 7 天工作周：与下方自然日日历一致（7×8h），保证 MS Project 周单位换算不跳周末
+        file.getProjectProperties().setMinutesPerWeek(3360);
         file.getProjectProperties().setDaysPerMonth(20);
-        // 默认日历（Standard）：手动计划任务的资源分配需经 ManuallyScheduledTaskCalendar 包装，缺省日历会 NPE
-        file.setDefaultCalendar(file.addDefaultBaseCalendar());
+        // 默认日历改为周一~周日全工作（8h/天）：使 MS Project 的「d」等价于本应用自然日，消除周末飘移；
+        // 同时手动计划任务的资源分配需经 ManuallyScheduledTaskCalendar 包装，缺省日历会 NPE
+        file.setDefaultCalendar(sevenDayCalendar(file));
 
         // 有效日期汇总：DFS 逆序（子先父后）逐层取自身与子孙 min/max，对齐前端摘要条推导
         Map<Long, List<Block>> children = new HashMap<>();
@@ -746,6 +751,23 @@ public class GanttProjectService {
             throw new BusinessException(ResultCode.INTERNAL_ERROR, "gantt.exportFailed");
         }
         return out.toByteArray();
+    }
+
+    /**
+     * 7 天工作日历（周一~周日，每日 08:00-12:00 / 13:00-17:00 共 8h）。
+     * 本应用工期为自然日（含首日），MS Project 默认 Standard 日历跳周末会导致导入后日期飘移；
+     * 将默认日历设为全周工作后，「d」即自然日，N d 正好覆盖 N 个自然日且保留 08:00/17:00 惯例。
+     */
+    private ProjectCalendar sevenDayCalendar(ProjectFile file) {
+        ProjectCalendar calendar = file.addCalendar();
+        calendar.setName("ProTask Natural Days");
+        for (DayOfWeek day : DayOfWeek.values()) {
+            calendar.setWorkingDay(day, true);
+            ProjectCalendarHours hours = calendar.addCalendarHours(day);
+            hours.add(ProjectCalendar.DEFAULT_WORKING_MORNING);
+            hours.add(ProjectCalendar.DEFAULT_WORKING_AFTERNOON);
+        }
+        return calendar;
     }
 
     /** 模板中第一个 member 类型属性 id（负责人资源分配来源） */

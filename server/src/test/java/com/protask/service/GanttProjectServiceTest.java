@@ -15,6 +15,7 @@ import com.protask.mapper.TaskDependencyMapper;
 import com.protask.mapper.UserMapper;
 import com.protask.permission.PermissionService;
 import net.sf.mpxj.ConstraintType;
+import net.sf.mpxj.ProjectCalendar;
 import net.sf.mpxj.ProjectFile;
 import net.sf.mpxj.Relation;
 import net.sf.mpxj.RelationType;
@@ -32,6 +33,7 @@ import org.mockito.quality.Strictness;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.HashMap;
@@ -773,6 +775,34 @@ class GanttProjectServiceTest {
         assertEquals(3.0, days(file, manualTask.getDuration()));
         assertEquals(ConstraintType.START_NO_EARLIER_THAN, autoTask.getConstraintType());
         assertEquals(LocalDateTime.of(2026, 11, 10, 8, 0), autoTask.getConstraintDate());
+    }
+
+    @Test
+    void exportMspdiUsesSevenDayCalendarSoWorkingDaysEqualCalendarDays() throws Exception {
+        // 跨周末：周五 11-20 ~ 周一 11-23 = 4 个自然日；Standard 日历下 4d 会飘到下周
+        Block span = card(1L, null, 1);
+        putProp(span, "startDate", "2026-11-20");
+        putProp(span, "dueDate", "2026-11-23");
+        stubWbs(List.of(span), List.of());
+
+        byte[] xml = service.exportMspdi(USER_ID, PROJECT_ID);
+        ProjectFile file = new MSPDIReader().read(new ByteArrayInputStream(xml));
+
+        ProjectCalendar calendar = file.getDefaultCalendar();
+        assertNotNull(calendar);
+        assertEquals("ProTask Natural Days", calendar.getName());
+        for (DayOfWeek day : DayOfWeek.values()) {
+            assertTrue(calendar.isWorkingDay(day), "weekend must be working: " + day);
+            assertEquals(8.0, calendar.getWork(day, TimeUnit.HOURS).getDuration());
+        }
+        assertEquals(3360, file.getProjectProperties().getMinutesPerWeek());
+
+        Task task = taskByName(file, "任务1");
+        assertEquals(4.0, days(file, task.getDuration()));
+        assertEquals(LocalDateTime.of(2026, 11, 20, 8, 0), task.getStart());
+        assertEquals(LocalDateTime.of(2026, 11, 23, 17, 0), task.getFinish());
+        // 关键：在该日历上从 start 推 4d 正好落在 finish，证明 MS Project 重排不飘移
+        assertEquals(task.getFinish(), calendar.getDate(task.getStart(), task.getDuration()));
     }
 
     private double days(ProjectFile file, net.sf.mpxj.Duration duration) {

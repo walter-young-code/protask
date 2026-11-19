@@ -351,6 +351,7 @@ export default {
     created: '视图「{title}」已创建',
     filter: '筛选',
     sort: '排序',
+    ganttToolDisabled: '甘特图视图不支持筛选和排序',
     searchPlaceholder: '视图内搜索',
     hiddenCount: '{count} 个任务被筛选隐藏',
     type: {
@@ -539,7 +540,7 @@ export default {
     builtinAdded: '（已添加）',
     settingsTitle: '设置属性',
     settingsHint: '点击属性名展开编辑：可重命名、调整类型、编辑选项，或删除与新增属性。',
-    wbsHint: '添加「WBS 编码」后，本项目解锁任务层级、甘特图视图、四种依赖（FS/SS/FF/SF）与 MS Project 导出，并自动绑定开始/截止日期；启用后这些必要字段不可删除。',
+    wbsHint: '添加「WBS 编码」解锁层级、甘特图、依赖（FS/SS/FF/SF）与 MS Project 导出，自动绑定开始/截止日期，必要字段不可删除。',
     startDateRequiresWbs: '开始日期属性需先添加 WBS 编码属性',
     requiredTag: '必要字段',
     requiredLockedHint: '甘特图必要字段（WBS 编码、开始日期、截止日期）不可删除',
