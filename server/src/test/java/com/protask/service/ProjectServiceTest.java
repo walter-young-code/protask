@@ -283,6 +283,46 @@ class ProjectServiceTest {
     }
 
     @Test
+    void requiredFieldsPinnedToTopOnSave() {
+        Project project = projectWithTemplate(WBS_TEMPLATE);
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(project);
+        stubReload();
+
+        // 用户排序：自定义属性领头、必要字段乱序 → 保存后必要字段恒置顶（wbs → startDate → dueDate）
+        CardPropertiesRequest request = new CardPropertiesRequest();
+        request.setProperties(List.of(def("p1", "工作量", "number"),
+                def("dueDate", "截止日期", "date"), def("wbs", "WBS编码", "text"),
+                def("startDate", "开始日期", "date")));
+        projectService.updateCardProperties(USER_ID, PROJECT_ID, request);
+
+        ArgumentCaptor<Project> captor = ArgumentCaptor.forClass(Project.class);
+        verify(projectMapper).updateById(captor.capture());
+        String saved = captor.getValue().getCardProperties();
+        int wbs = saved.indexOf("\"id\":\"wbs\"");
+        int start = saved.indexOf("\"id\":\"startDate\"");
+        int due = saved.indexOf("\"id\":\"dueDate\"");
+        int p1 = saved.indexOf("\"id\":\"p1\"");
+        assertTrue(wbs >= 0 && wbs < start && start < due && due < p1);
+    }
+
+    @Test
+    void plainProjectKeepsUserOrderOnSave() {
+        Project project = projectWithTemplate("[]");
+        when(projectMapper.selectById(PROJECT_ID)).thenReturn(project);
+        stubReload();
+
+        // 非 WBS 项目：不强制置顶，保持用户排序
+        CardPropertiesRequest request = new CardPropertiesRequest();
+        request.setProperties(List.of(def("p1", "工作量", "number"), def("dueDate", "截止日期", "date")));
+        projectService.updateCardProperties(USER_ID, PROJECT_ID, request);
+
+        ArgumentCaptor<Project> captor = ArgumentCaptor.forClass(Project.class);
+        verify(projectMapper).updateById(captor.capture());
+        String saved = captor.getValue().getCardProperties();
+        assertTrue(saved.indexOf("\"id\":\"p1\"") < saved.indexOf("\"id\":\"dueDate\""));
+    }
+
+    @Test
     void plainProjectCanStillDeleteDueDate() {
         Project project = projectWithTemplate("[{\"id\":\"dueDate\",\"name\":\"截止日期\",\"type\":\"date\"}]");
         when(projectMapper.selectById(PROJECT_ID)).thenReturn(project);

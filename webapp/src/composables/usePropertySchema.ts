@@ -96,6 +96,17 @@ export function usePropertySchema(options: UsePropertySchemaOptions) {
     await addProperty(command as CustomPropertyType)
   }
 
+  /** 拖拽排序：按 id 序列重排模板后静默保存（必要字段置顶由展示层/后端规范化保证） */
+  async function reorderProperties(orderedIds: string[]) {
+    const template = options.template()
+    const byId = new Map(template.map((p) => [p.id, p]))
+    const reordered = orderedIds
+      .map((id) => byId.get(id))
+      .filter((p): p is CardProperty => Boolean(p))
+    if (reordered.length !== template.length) return
+    await saveTemplate(reordered, false)
+  }
+
   /** 删除属性：确认后从模板移除，后端级联清理全部卡片上的对应值 */
   async function deleteProperty(prop: CardProperty) {
     // 甘特必要字段锁定：启用（含 WBS）后 WBS/开始日期/截止日期不可删（后端兜底校验）
@@ -130,6 +141,7 @@ export function usePropertySchema(options: UsePropertySchemaOptions) {
     builtinAdded,
     addBuiltinProperty,
     addPropertyCommand,
+    reorderProperties,
     deleteProperty,
   }
 }

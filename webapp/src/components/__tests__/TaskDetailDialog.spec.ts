@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
@@ -104,9 +104,11 @@ describe('TaskDetailDialog WBS 编码前缀于名称', () => {
     await nextTick()
     const chip = document.querySelector('.detail-wbs-prefix')
     expect(chip?.textContent?.trim()).toBe('2.1')
-    expect(document.querySelector('.detail-title input')).toBeTruthy()
+    expect(document.querySelector('.detail-title textarea')).toBeTruthy()
     const labels = [...document.querySelectorAll('.property-form .el-form-item__label')].map((l) => l.textContent || '')
     expect(labels.some((l) => l.includes('WBS'))).toBe(false)
+    // 标题 autosize textarea 的 EP 内部 nextTick 回调需在卸载前 flush，避免读 null ref
+    await flushPromises()
     wrapper.unmount()
   })
 
@@ -116,7 +118,7 @@ describe('TaskDetailDialog WBS 编码前缀于名称', () => {
     await nextTick()
     expect(document.querySelector('.detail-wbs-prefix')?.textContent?.trim()).toBe('2.1')
     expect(document.querySelector('.detail-title-readonly')?.textContent?.trim()).toBe('Beta')
-    expect(document.querySelector('.detail-title input')).toBeNull()
+    expect(document.querySelector('.detail-title textarea')).toBeNull()
     wrapper.unmount()
   })
 
@@ -125,6 +127,7 @@ describe('TaskDetailDialog WBS 编码前缀于名称', () => {
     await nextTick()
     await nextTick()
     expect(document.querySelector('.detail-wbs-prefix')).toBeNull()
+    await flushPromises()
     wrapper.unmount()
   })
 })

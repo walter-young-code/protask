@@ -181,6 +181,25 @@ public class GanttProjectService {
         return def;
     }
 
+    /** 必要字段置顶：模板含 WBS 时按 wbs → startDate → dueDate 固定顺序移至头部，其余保持原序 */
+    public List<CardPropertiesRequest.CardPropertyDef> orderRequiredFirst(
+            List<CardPropertiesRequest.CardPropertyDef> properties) {
+        boolean hasWbs = properties.stream().anyMatch(p -> PROP_WBS.equals(p.getId()));
+        if (!hasWbs) {
+            return properties;
+        }
+        List<CardPropertiesRequest.CardPropertyDef> result = new ArrayList<>();
+        for (String id : List.of(PROP_WBS, PROP_START_DATE, PROP_DUE_DATE)) {
+            properties.stream().filter(p -> id.equals(p.getId())).findFirst().ifPresent(result::add);
+        }
+        for (CardPropertiesRequest.CardPropertyDef def : properties) {
+            if (!REQUIRED_PROPS.contains(def.getId())) {
+                result.add(def);
+            }
+        }
+        return result;
+    }
+
     /** 项目下未删除的任务卡片 */
     public List<Block> liveCards(Long projectId) {
         return blockMapper.selectList(new LambdaQueryWrapper<Block>()
@@ -605,6 +624,50 @@ public class GanttProjectService {
         return result;
     }
 
+    /** 每任务有效开始/截止日期（摘要任务按自身与子孙 min/max 卷算） */
+    public record EffectiveDates(Map<Long, LocalDate> starts, Map<Long, LocalDate> ends) {
+    }
+
+    /**
+     * 有效日期汇总：DFS 逆序（子先父后）逐层取自身与子孙 min/max，
+     * 对齐前端摘要条推导；供 MS Project 导出与 Excel 导出共享。
+     */
+    public EffectiveDates effectiveDates(TaskTree tree) {
+        Map<Long, List<Block>> children = new HashMap<>();
+        for (Block card : tree.ordered()) {
+            if (tree.depth().get(card.getId()) > 0) {
+                children.computeIfAbsent(card.getParentTaskId(), k -> new ArrayList<>()).add(card);
+            }
+        }
+        Map<Long, LocalDate> effStart = new HashMap<>();
+        Map<Long, LocalDate> effEnd = new HashMap<>();
+        for (int i = tree.ordered().size() - 1; i >= 0; i--) {
+            Block card = tree.ordered().get(i);
+            Map<String, Object> props = properties(card);
+            LocalDate start = parseDate(asString(props.get(PROP_START_DATE)));
+            LocalDate end = parseDate(asString(props.get(PROP_DUE_DATE)));
+            if (start == null) {
+                start = end;
+            }
+            if (end == null) {
+                end = start;
+            }
+            for (Block kid : children.getOrDefault(card.getId(), List.of())) {
+                LocalDate kidStart = effStart.get(kid.getId());
+                LocalDate kidEnd = effEnd.get(kid.getId());
+                if (kidStart != null && (start == null || kidStart.isBefore(start))) {
+                    start = kidStart;
+                }
+                if (kidEnd != null && (end == null || kidEnd.isAfter(end))) {
+                    end = kidEnd;
+                }
+            }
+            effStart.put(card.getId(), start);
+            effEnd.put(card.getId(), end);
+        }
+        return new EffectiveDates(effStart, effEnd);
+    }
+
     // ---------- MS Project 导出 ----------
 
     /**
@@ -638,38 +701,9 @@ public class GanttProjectService {
         file.setDefaultCalendar(sevenDayCalendar(file));
 
         // 有效日期汇总：DFS 逆序（子先父后）逐层取自身与子孙 min/max，对齐前端摘要条推导
-        Map<Long, List<Block>> children = new HashMap<>();
-        for (Block card : tree.ordered()) {
-            if (tree.depth().get(card.getId()) > 0) {
-                children.computeIfAbsent(card.getParentTaskId(), k -> new ArrayList<>()).add(card);
-            }
-        }
-        Map<Long, LocalDate> effStart = new HashMap<>();
-        Map<Long, LocalDate> effEnd = new HashMap<>();
-        for (int i = tree.ordered().size() - 1; i >= 0; i--) {
-            Block card = tree.ordered().get(i);
-            Map<String, Object> props = properties(card);
-            LocalDate start = parseDate(asString(props.get(PROP_START_DATE)));
-            LocalDate end = parseDate(asString(props.get(PROP_DUE_DATE)));
-            if (start == null) {
-                start = end;
-            }
-            if (end == null) {
-                end = start;
-            }
-            for (Block kid : children.getOrDefault(card.getId(), List.of())) {
-                LocalDate kidStart = effStart.get(kid.getId());
-                LocalDate kidEnd = effEnd.get(kid.getId());
-                if (kidStart != null && (start == null || kidStart.isBefore(start))) {
-                    start = kidStart;
-                }
-                if (kidEnd != null && (end == null || kidEnd.isAfter(end))) {
-                    end = kidEnd;
-                }
-            }
-            effStart.put(card.getId(), start);
-            effEnd.put(card.getId(), end);
-        }
+        EffectiveDates effective = effectiveDates(tree);
+        Map<Long, LocalDate> effStart = effective.starts();
+        Map<Long, LocalDate> effEnd = effective.ends();
 
         Map<Long, Task> taskByDbId = new HashMap<>();
         Map<Long, Resource> resourceByUserId = new HashMap<>();

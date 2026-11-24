@@ -82,6 +82,16 @@ export function isGanttRequiredProperty(id: string): boolean {
   return GANTT_REQUIRED_PROPERTY_IDS.includes(id)
 }
 
+/** 模板排序规范化：含 WBS 时必要字段按 wbs → startDate → dueDate 固定置顶，其余保持原序 */
+export function orderRequiredFirst(template: CardProperty[]): CardProperty[] {
+  if (!hasWbsProperty(template)) return template
+  const required = GANTT_REQUIRED_PROPERTY_IDS.map((id) => template.find((p) => p.id === id)).filter(
+    (p): p is CardProperty => Boolean(p),
+  )
+  const rest = template.filter((p) => !isGanttRequiredProperty(p.id))
+  return [...required, ...rest]
+}
+
 /** 模板是否已绑定排期字段（开始日期 + 截止日期均在） */
 export function hasScheduleProperties(cardProperties: CardProperty[]): boolean {
   return (

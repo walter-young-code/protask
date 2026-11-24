@@ -8,6 +8,7 @@ import {
   hasScheduleProperties,
   hasWbsProperty,
   isGanttRequiredProperty,
+  orderRequiredFirst,
   propertyDisplayText,
   START_DATE_PROPERTY_ID,
   WBS_PROPERTY_ID,
@@ -149,5 +150,35 @@ describe('BUILTIN_PROPERTIES', () => {
     const startDate = BUILTIN_PROPERTIES.find((p) => p.id === START_DATE_PROPERTY_ID)
     expect(wbs?.type).toBe('text')
     expect(startDate?.type).toBe('date')
+  })
+})
+
+describe('orderRequiredFirst（必要字段置顶）', () => {
+  const wbs: CardProperty = { id: WBS_PROPERTY_ID, name: 'WBS编码', type: 'text' }
+  const start: CardProperty = { id: START_DATE_PROPERTY_ID, name: '开始日期', type: 'date' }
+  const due: CardProperty = { id: DUE_DATE_PROPERTY_ID, name: '截止日期', type: 'date' }
+  const status: CardProperty = { id: 'status', name: '状态', type: 'select' }
+  const custom: CardProperty = { id: 'p1', name: '备注', type: 'text' }
+
+  it('含 WBS 时必要字段按 wbs → startDate → dueDate 固定置顶，其余保持原序', () => {
+    const result = orderRequiredFirst([custom, due, status, wbs, start])
+    expect(result.map((p) => p.id)).toEqual([
+      WBS_PROPERTY_ID,
+      START_DATE_PROPERTY_ID,
+      DUE_DATE_PROPERTY_ID,
+      'p1',
+      'status',
+    ])
+  })
+
+  it('必要字段不全时仅置顶已有字段', () => {
+    const result = orderRequiredFirst([status, due, wbs])
+    expect(result.map((p) => p.id)).toEqual([WBS_PROPERTY_ID, DUE_DATE_PROPERTY_ID, 'status'])
+  })
+
+  it('非 WBS 项目原样返回（不强制置顶）', () => {
+    const template = [due, status, custom]
+    expect(orderRequiredFirst(template)).toBe(template)
+    expect(orderRequiredFirst([])).toEqual([])
   })
 })

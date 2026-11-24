@@ -549,6 +549,7 @@ export default {
     settingsTitle: 'Project Properties',
     settingsHint:
       'Click a property name to edit it: rename, change type, edit options, or delete. Add new properties below.',
+    dragHint: 'Drag properties to reorder; required fields stay pinned on top.',
     wbsHint: 'Adding "WBS code" unlocks hierarchy, Gantt view, dependencies (FS/SS/FF/SF) and MS Project export, auto-binds start/due dates; required fields cannot be deleted.',
     startDateRequiresWbs: 'The start date property requires the WBS code property first',
     requiredTag: 'Required',

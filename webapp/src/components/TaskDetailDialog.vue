@@ -908,11 +908,14 @@ function formatTime(value?: string) {
             class="detail-wbs-prefix"
             :title="t('task.wbsReadonly')"
           >{{ task.wbs }}</span>
+          <!-- 多行自适应：超长名称换行完整展示，避免单行输入截断 -->
           <el-input
             v-if="editable"
             v-model="form.title"
+            type="textarea"
             class="detail-title"
             :style="{ width: `${titleInputWidth}px` }"
+            :autosize="{ minRows: 1, maxRows: 6 }"
             size="large"
             maxlength="200"
             :placeholder="t('task.titlePlaceholder')"
@@ -1283,23 +1286,24 @@ function formatTime(value?: string) {
   max-width: 100%;
 }
 
-.detail-title :deep(.el-input__wrapper) {
+.detail-title :deep(.el-textarea__inner) {
   box-shadow: none;
   background: transparent;
+  resize: none;
+  padding: 6px 12px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 
-.detail-title :deep(.el-input__wrapper:hover) {
+.detail-title :deep(.el-textarea__inner:hover) {
   background: var(--app-fill);
 }
 
-.detail-title :deep(.el-input__wrapper.is-focus) {
+.detail-title :deep(.el-textarea__inner:focus) {
   background: var(--el-color-primary-light-9);
-}
-
-.detail-title :deep(.el-input__inner) {
-  font-size: 20px;
-  font-weight: 600;
-  text-align: center;
 }
 
 .detail-title-readonly {

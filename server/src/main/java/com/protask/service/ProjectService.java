@@ -714,6 +714,8 @@ public class ProjectService {
         ganttProjectService.requireRequiredFieldsKept(project, deletedIds);
         // 启用绑定：新模板含 WBS 时自动补齐开始/截止日期属性
         properties = ganttProjectService.ensureScheduleFields(properties);
+        // 必要字段恒置顶（wbs → startDate → dueDate），其余保持用户排序
+        properties = ganttProjectService.orderRequiredFirst(properties);
         if (!deletedIds.isEmpty()) {
             blockService.removePropertyFromCards(projectId, deletedIds, userId);
         }

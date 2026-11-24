@@ -15,6 +15,7 @@ import com.protask.mapper.TaskDependencyMapper;
 import com.protask.mapper.UserMapper;
 import com.protask.permission.PermissionService;
 import com.protask.permission.ProjectPermission;
+import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
@@ -52,8 +53,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * TaskExcelService 单元测试：固定列导出、内置字段映射导入、WBS 前缀推导层级、
- * FS 依赖建立、全量校验失败整体不写入、非 WBS 项目忽略层级列。
+ * TaskExcelService 单元测试：按模板顺序导出（含自定义属性列）、WBS 工期/摘要卷算、
+ * 内置字段映射导入、WBS 前缀推导层级、FS 依赖建立、全量校验失败整体不写入、非 WBS 项目忽略层级列。
  * 采用 LENIENT 桩策略，因服务内部多次复用 selectById/selectList。
  */
 @ExtendWith(MockitoExtension.class)
@@ -102,6 +103,9 @@ class TaskExcelServiceTest {
 
     private TaskExcelService service;
 
+    /** 真实实例：effectiveDates 为纯树卷算逻辑，桩委托真实执行（依赖 mapper 传 null 即可） */
+    private final GanttProjectService realGantt = new GanttProjectService(null, null, null, null, null);
+
     private final AtomicLong idSeq = new AtomicLong(100);
 
     @BeforeEach
@@ -119,6 +123,8 @@ class TaskExcelServiceTest {
         when(dependencyMapper.insert(any(TaskDependency.class))).thenReturn(1);
         when(ganttProjectService.liveCards(PROJECT_ID)).thenReturn(List.of());
         when(dependencyMapper.selectList(any())).thenReturn(List.of());
+        when(ganttProjectService.effectiveDates(any()))
+                .thenAnswer(inv -> realGantt.effectiveDates(inv.getArgument(0)));
     }
 
     @AfterEach
@@ -223,25 +229,40 @@ class TaskExcelServiceTest {
         try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(xlsx))) {
             Sheet sheet = wb.getSheet("Tasks");
             Row header = sheet.getRow(0);
+            // 列序：固定前置列 + 模板属性顺序（wbs/startDate/dueDate/status/priority/assignee）
             assertEquals("WBS编码", header.getCell(0).getStringCellValue());
             assertEquals("标题", header.getCell(1).getStringCellValue());
-            assertEquals("里程碑", header.getCell(2).getStringCellValue());
-            assertEquals("前置任务", header.getCell(3).getStringCellValue());
-            assertEquals("状态", header.getCell(4).getStringCellValue());
-            assertEquals("优先级", header.getCell(5).getStringCellValue());
-            assertEquals("负责人", header.getCell(6).getStringCellValue());
-            assertEquals("开始日期", header.getCell(7).getStringCellValue());
-            assertEquals("截止日期", header.getCell(8).getStringCellValue());
+            assertEquals("工期", header.getCell(2).getStringCellValue());
+            assertEquals("里程碑", header.getCell(3).getStringCellValue());
+            assertEquals("前置任务", header.getCell(4).getStringCellValue());
+            assertEquals("开始日期", header.getCell(5).getStringCellValue());
+            assertEquals("截止日期", header.getCell(6).getStringCellValue());
+            assertEquals("状态", header.getCell(7).getStringCellValue());
+            assertEquals("优先级", header.getCell(8).getStringCellValue());
+            assertEquals("负责人", header.getCell(9).getStringCellValue());
+            // 摘要行：工期/起止按子孙卷算（01-01 → 01-05 含首日共 5 天）
+            Row rowRoot = sheet.getRow(1);
+            assertEquals(CellType.NUMERIC, rowRoot.getCell(2).getCellType());
+            assertEquals(5d, rowRoot.getCell(2).getNumericCellValue());
+            assertEquals("2026-01-01", rowRoot.getCell(5).getStringCellValue());
+            assertEquals("2026-01-05", rowRoot.getCell(6).getStringCellValue());
             Row rowA = sheet.getRow(2);
             assertEquals("1.1", rowA.getCell(0).getStringCellValue());
-            assertEquals("是", rowA.getCell(2).getStringCellValue());
-            assertEquals("进行中", rowA.getCell(4).getStringCellValue());
-            assertEquals("P0", rowA.getCell(5).getStringCellValue());
-            assertEquals("张三", rowA.getCell(6).getStringCellValue());
-            assertEquals("2026-01-01", rowA.getCell(7).getStringCellValue());
-            assertEquals("2026-01-05", rowA.getCell(8).getStringCellValue());
+            // 里程碑 0 工期（数值单元格）
+            assertEquals(CellType.NUMERIC, rowA.getCell(2).getCellType());
+            assertEquals(0d, rowA.getCell(2).getNumericCellValue());
+            assertEquals("是", rowA.getCell(3).getStringCellValue());
+            assertEquals("2026-01-01", rowA.getCell(5).getStringCellValue());
+            assertEquals("2026-01-05", rowA.getCell(6).getStringCellValue());
+            assertEquals("进行中", rowA.getCell(7).getStringCellValue());
+            assertEquals("P0", rowA.getCell(8).getStringCellValue());
+            assertEquals("张三", rowA.getCell(9).getStringCellValue());
             Row rowB = sheet.getRow(3);
-            assertEquals("1.1", rowB.getCell(3).getStringCellValue());
+            assertEquals("1.1", rowB.getCell(4).getStringCellValue());
+            // 未排期任务：工期/起止留空
+            assertNull(rowB.getCell(2));
+            assertNull(rowB.getCell(5));
+            assertNull(rowB.getCell(6));
         }
         verify(permissionService).checkPermission(USER_ID, PROJECT_ID, ProjectPermission.VIEW_PROJECT);
     }
@@ -257,11 +278,161 @@ class TaskExcelServiceTest {
         byte[] xlsx = service.exportExcel(USER_ID, PROJECT_ID);
         try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(xlsx))) {
             Sheet sheet = wb.getSheet("Tasks");
+            // 列仅来自模板：标题 + 状态 + 截止日期（无 WBS/工期/里程碑/前置任务列）
             assertEquals("标题", sheet.getRow(0).getCell(0).getStringCellValue());
+            assertEquals("状态", sheet.getRow(0).getCell(1).getStringCellValue());
+            assertEquals("截止日期", sheet.getRow(0).getCell(2).getStringCellValue());
+            assertNull(sheet.getRow(0).getCell(3));
             assertEquals("待开始", sheet.getRow(1).getCell(1).getStringCellValue());
-            // 模板未添加优先级/负责人/开始日期：列存在但值为空
             assertNull(sheet.getRow(1).getCell(2));
-            assertNull(sheet.getRow(1).getCell(3));
+        }
+    }
+
+    @Test
+    void exportColumnsFollowTemplateOrder() throws Exception {
+        String template = "[{\"id\":\"qty\",\"name\":\"工程量\",\"type\":\"number\"},"
+                + "{\"id\":\"status\",\"name\":\"状态\",\"type\":\"select\",\"options\":["
+                + "{\"id\":\"todo\",\"value\":\"待开始\"}]},"
+                + "{\"id\":\"note\",\"name\":\"备注\",\"type\":\"text\"}]";
+        Project project = project(template);
+        when(ganttProjectService.hasWbs(project)).thenReturn(false);
+        Block card = card(11L, null, 1);
+        putProp(card, "qty", 12.5);
+        putProp(card, "status", "todo");
+        putProp(card, "note", "hello");
+        when(ganttProjectService.liveCards(PROJECT_ID)).thenReturn(List.of(card));
+
+        byte[] xlsx = service.exportExcel(USER_ID, PROJECT_ID);
+        try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(xlsx))) {
+            Sheet sheet = wb.getSheet("Tasks");
+            assertEquals("标题", sheet.getRow(0).getCell(0).getStringCellValue());
+            assertEquals("工程量", sheet.getRow(0).getCell(1).getStringCellValue());
+            assertEquals("状态", sheet.getRow(0).getCell(2).getStringCellValue());
+            assertEquals("备注", sheet.getRow(0).getCell(3).getStringCellValue());
+            assertEquals("12.5", sheet.getRow(1).getCell(1).getStringCellValue());
+            assertEquals("待开始", sheet.getRow(1).getCell(2).getStringCellValue());
+            assertEquals("hello", sheet.getRow(1).getCell(3).getStringCellValue());
+        }
+
+        // 模板重排（status 置顶）后导出列序随之变化
+        String reordered = "[{\"id\":\"status\",\"name\":\"状态\",\"type\":\"select\",\"options\":["
+                + "{\"id\":\"todo\",\"value\":\"待开始\"}]},"
+                + "{\"id\":\"qty\",\"name\":\"工程量\",\"type\":\"number\"},"
+                + "{\"id\":\"note\",\"name\":\"备注\",\"type\":\"text\"}]";
+        project(reordered);
+        byte[] xlsx2 = service.exportExcel(USER_ID, PROJECT_ID);
+        try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(xlsx2))) {
+            Sheet sheet = wb.getSheet("Tasks");
+            assertEquals("状态", sheet.getRow(0).getCell(1).getStringCellValue());
+            assertEquals("工程量", sheet.getRow(0).getCell(2).getStringCellValue());
+            assertEquals("备注", sheet.getRow(0).getCell(3).getStringCellValue());
+            assertEquals("待开始", sheet.getRow(1).getCell(1).getStringCellValue());
+            assertEquals("12.5", sheet.getRow(1).getCell(2).getStringCellValue());
+        }
+    }
+
+    @Test
+    void exportCustomPropertyTypeValues() throws Exception {
+        String template = "[{\"id\":\"phase\",\"name\":\"阶段\",\"type\":\"select\",\"options\":["
+                + "{\"id\":\"a\",\"value\":\"阶段A\"},{\"id\":\"b\",\"value\":\"阶段B\"}]},"
+                + "{\"id\":\"tags\",\"name\":\"标签\",\"type\":\"multiSelect\",\"options\":["
+                + "{\"id\":\"x\",\"value\":\"标签X\"},{\"id\":\"y\",\"value\":\"标签Y\"}]},"
+                + "{\"id\":\"done\",\"name\":\"完成\",\"type\":\"checkbox\"},"
+                + "{\"id\":\"deliver\",\"name\":\"交付日\",\"type\":\"date\"},"
+                + "{\"id\":\"owner\",\"name\":\"负责人\",\"type\":\"member\"}]";
+        Project project = project(template);
+        when(ganttProjectService.hasWbs(project)).thenReturn(false);
+        Block card = card(11L, null, 1);
+        putProp(card, "phase", "a");
+        putProp(card, "tags", List.of("x", "y"));
+        putProp(card, "done", true);
+        putProp(card, "deliver", "2026-05-01 08:00:00");
+        putProp(card, "owner", 5L);
+        when(ganttProjectService.liveCards(PROJECT_ID)).thenReturn(List.of(card));
+        stubMembers();
+
+        byte[] xlsx = service.exportExcel(USER_ID, PROJECT_ID);
+        try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(xlsx))) {
+            Sheet sheet = wb.getSheet("Tasks");
+            Row row = sheet.getRow(1);
+            assertEquals("阶段A", row.getCell(1).getStringCellValue());
+            assertEquals("标签X, 标签Y", row.getCell(2).getStringCellValue());
+            assertEquals("是", row.getCell(3).getStringCellValue());
+            assertEquals("2026-05-01", row.getCell(4).getStringCellValue());
+            assertEquals("张三", row.getCell(5).getStringCellValue());
+        }
+    }
+
+    @Test
+    void exportWbsDurationVariants() throws Exception {
+        Project project = project(WBS_TEMPLATE);
+        when(ganttProjectService.hasWbs(project)).thenReturn(true);
+        // 显式工期优先（起止仅 3 天但 durationDays=7）
+        Block explicit = card(11L, null, 1);
+        explicit.setDurationDays(7);
+        putProp(explicit, "startDate", "2026-01-01");
+        putProp(explicit, "dueDate", "2026-01-03");
+        // 无显式工期：起止 diff+1
+        Block derived = card(12L, null, 2);
+        putProp(derived, "startDate", "2026-01-01");
+        putProp(derived, "dueDate", "2026-01-05");
+        // 里程碑 0 工期
+        Block milestone = card(13L, null, 3);
+        milestone.setMilestone(true);
+        putProp(milestone, "startDate", "2026-01-02");
+        putProp(milestone, "dueDate", "2026-01-02");
+        // 未排期：留空
+        Block unscheduled = card(14L, null, 4);
+        GanttProjectService.TaskTree tree = new GanttProjectService.TaskTree(
+                List.of(explicit, derived, milestone, unscheduled),
+                Map.of(11L, "1", 12L, "2", 13L, "3", 14L, "4"),
+                Map.of(11L, 0, 12L, 0, 13L, 0, 14L, 0),
+                Map.of(11L, 0, 12L, 0, 13L, 0, 14L, 0));
+        when(ganttProjectService.buildTree(PROJECT_ID)).thenReturn(tree);
+
+        byte[] xlsx = service.exportExcel(USER_ID, PROJECT_ID);
+        try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(xlsx))) {
+            Sheet sheet = wb.getSheet("Tasks");
+            assertEquals(7d, sheet.getRow(1).getCell(2).getNumericCellValue());
+            assertEquals(5d, sheet.getRow(2).getCell(2).getNumericCellValue());
+            assertEquals(0d, sheet.getRow(3).getCell(2).getNumericCellValue());
+            assertNull(sheet.getRow(4).getCell(2));
+        }
+    }
+
+    @Test
+    void exportSummaryRollsUpNestedDates() throws Exception {
+        Project project = project(WBS_TEMPLATE);
+        when(ganttProjectService.hasWbs(project)).thenReturn(true);
+        Block root = card(11L, null, 1);
+        Block mid = card(12L, 11L, 1);
+        putProp(mid, "startDate", "2026-01-01");
+        putProp(mid, "dueDate", "2026-01-05");
+        Block leaf = card(13L, 12L, 1);
+        putProp(leaf, "startDate", "2026-01-03");
+        putProp(leaf, "dueDate", "2026-01-10");
+        GanttProjectService.TaskTree tree = new GanttProjectService.TaskTree(
+                List.of(root, mid, leaf),
+                Map.of(11L, "1", 12L, "1.1", 13L, "1.1.1"),
+                Map.of(11L, 1, 12L, 1, 13L, 0),
+                Map.of(11L, 0, 12L, 1, 13L, 2));
+        when(ganttProjectService.buildTree(PROJECT_ID)).thenReturn(tree);
+
+        byte[] xlsx = service.exportExcel(USER_ID, PROJECT_ID);
+        try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(xlsx))) {
+            Sheet sheet = wb.getSheet("Tasks");
+            // 根摘要：跨两层卷算 01-01 → 01-10（10 天）
+            Row rowRoot = sheet.getRow(1);
+            assertEquals(10d, rowRoot.getCell(2).getNumericCellValue());
+            assertEquals("2026-01-01", rowRoot.getCell(5).getStringCellValue());
+            assertEquals("2026-01-10", rowRoot.getCell(6).getStringCellValue());
+            // 中间摘要：自身 01-05 被子孙 01-10 延展
+            Row rowMid = sheet.getRow(2);
+            assertEquals(10d, rowMid.getCell(2).getNumericCellValue());
+            assertEquals("2026-01-10", rowMid.getCell(6).getStringCellValue());
+            // 叶子：自身起止 diff+1
+            Row rowLeaf = sheet.getRow(3);
+            assertEquals(8d, rowLeaf.getCell(2).getNumericCellValue());
         }
     }
 
@@ -457,8 +628,10 @@ class TaskExcelServiceTest {
         try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(xlsx))) {
             Sheet sheet = wb.getSheet("Tasks");
             assertEquals("WBS编码", sheet.getRow(0).getCell(0).getStringCellValue());
+            assertEquals("工期", sheet.getRow(0).getCell(2).getStringCellValue());
             assertEquals("1", sheet.getRow(1).getCell(0).getStringCellValue());
             assertEquals("示例任务", sheet.getRow(1).getCell(1).getStringCellValue());
+            assertEquals(1d, sheet.getRow(1).getCell(2).getNumericCellValue());
         }
         verify(permissionService).checkPermission(USER_ID, PROJECT_ID, ProjectPermission.MANAGE_PROJECT_CARDS);
     }

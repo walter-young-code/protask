@@ -43,6 +43,7 @@ import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -55,26 +56,38 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * 任务 Excel(.xlsx) 导入导出：固定列结构（标题 + 内置字段，WBS 项目另含 WBS编码/里程碑/前置任务列）。
+ * 任务 Excel(.xlsx) 导入导出：导出列按属性模板顺序（标题领头，WBS 项目另含 WBS编码/工期/里程碑/前置任务列，
+ * 自定义属性按模板顺序成列，摘要行卷算工期/起止日期）。
  * 导出需查看权限、不设 WBS 门禁；导入仅新建任务，先全量校验后单事务写入，
- * 层级由 WBS 编码前缀推导（1.1.2 → 父为 1.1），依赖仅 FS、lag=0。自定义属性不参与。
+ * 层级由 WBS 编码前缀推导（1.1.2 → 父为 1.1），依赖仅 FS、lag=0。自定义属性列不参与导入。
  */
 @Service
 @RequiredArgsConstructor
 public class TaskExcelService {
 
-    /** 固定列（按输出顺序） */
-    private enum Col { WBS, TITLE, MILESTONE, PREDECESSORS, STATUS, PRIORITY, ASSIGNEE, START_DATE, DUE_DATE }
+    /** 固定列（ASSIGNEE 仅导入匹配用，导出时 member 属性按属性名成列） */
+    private enum Col { WBS, TITLE, DURATION, MILESTONE, PREDECESSORS, STATUS, PRIORITY, ASSIGNEE, START_DATE, DUE_DATE }
 
     private static final Map<Col, String> HEADERS_ZH = Map.of(
-            Col.WBS, "WBS编码", Col.TITLE, "标题", Col.MILESTONE, "里程碑",
+            Col.WBS, "WBS编码", Col.TITLE, "标题", Col.DURATION, "工期", Col.MILESTONE, "里程碑",
             Col.PREDECESSORS, "前置任务", Col.STATUS, "状态", Col.PRIORITY, "优先级",
             Col.ASSIGNEE, "负责人", Col.START_DATE, "开始日期", Col.DUE_DATE, "截止日期");
 
     private static final Map<Col, String> HEADERS_EN = Map.of(
-            Col.WBS, "WBS", Col.TITLE, "Title", Col.MILESTONE, "Milestone",
+            Col.WBS, "WBS", Col.TITLE, "Title", Col.DURATION, "Duration", Col.MILESTONE, "Milestone",
             Col.PREDECESSORS, "Predecessors", Col.STATUS, "Status", Col.PRIORITY, "Priority",
             Col.ASSIGNEE, "Assignee", Col.START_DATE, "Start Date", Col.DUE_DATE, "Due Date");
+
+    /** 导出列：固定内置列或模板属性列（二选一） */
+    private record ExportColumn(Col fixed, JsonNode prop) {
+        static ExportColumn fixed(Col col) {
+            return new ExportColumn(col, null);
+        }
+
+        static ExportColumn ofProp(JsonNode prop) {
+            return new ExportColumn(null, prop);
+        }
+    }
 
     private static final int MAX_ROWS = 2000;
     private static final long MAX_FILE_SIZE = 10L * 1024 * 1024;
@@ -91,15 +104,15 @@ public class TaskExcelService {
 
     // ---------- 导出 ----------
 
-    /** 导出项目任务为 .xlsx（所有项目可用；WBS 项目按树序输出并携带层级/依赖列） */
+    /** 导出项目任务为 .xlsx（所有项目可用；列按属性模板顺序，WBS 项目按树序输出并携带工期/层级/依赖列） */
     public byte[] exportExcel(Long userId, Long projectId) {
         Project project = checkProject(projectId);
         permissionService.checkPermission(userId, projectId, ProjectPermission.VIEW_PROJECT);
         boolean hasWbs = ganttProjectService.hasWbs(project);
+        GanttProjectService.TaskTree tree = hasWbs ? ganttProjectService.buildTree(projectId) : null;
         List<Block> cards;
         Map<Long, String> wbs;
         if (hasWbs) {
-            GanttProjectService.TaskTree tree = ganttProjectService.buildTree(projectId);
             cards = tree.ordered();
             wbs = tree.wbs();
         } else {
@@ -111,8 +124,7 @@ public class TaskExcelService {
         List<JsonNode> template = parseTemplate(project);
         JsonNode statusProp = propById(template, "status");
         JsonNode priorityProp = propById(template, "priority");
-        String memberPropId = firstMemberPropId(template);
-        Map<Long, String> nicknames = assigneeNicknames(cards, memberPropId);
+        Map<Long, String> nicknames = assigneeNicknames(cards, memberPropIds(template));
         // 依赖列：successor → 其 predecessor 的 WBS 编码列表
         Map<Long, List<String>> predsBySuccessor = new HashMap<>();
         if (hasWbs) {
@@ -124,8 +136,10 @@ public class TaskExcelService {
                 }
             }
         }
+        // WBS 工期/摘要卷算日期（对齐 MS Project 导出语义）
+        GanttProjectService.EffectiveDates effective = hasWbs ? ganttProjectService.effectiveDates(tree) : null;
         boolean en = isEnglish();
-        List<Col> cols = columns(hasWbs);
+        List<ExportColumn> cols = exportColumns(hasWbs, template);
         try (XSSFWorkbook wb = new XSSFWorkbook()) {
             Sheet sheet = wb.createSheet("Tasks");
             Row header = sheet.createRow(0);
@@ -135,7 +149,7 @@ public class TaskExcelService {
             bold.setFont(font);
             for (int i = 0; i < cols.size(); i++) {
                 Cell cell = header.createCell(i);
-                cell.setCellValue(header(cols.get(i), en));
+                cell.setCellValue(columnHeader(cols.get(i), en));
                 cell.setCellStyle(bold);
             }
             int rowIdx = 1;
@@ -143,21 +157,40 @@ public class TaskExcelService {
                 Map<String, Object> props = properties(card);
                 Row row = sheet.createRow(rowIdx++);
                 for (int i = 0; i < cols.size(); i++) {
-                    Col col = cols.get(i);
-                    String value = switch (col) {
+                    ExportColumn col = cols.get(i);
+                    // 模板属性列：按属性类型渲染值
+                    if (col.prop() != null) {
+                        String value = propValueText(col.prop(),
+                                props.get(col.prop().path("id").asText(null)), nicknames, en);
+                        if (value != null && !value.isEmpty()) {
+                            row.createCell(i).setCellValue(value);
+                        }
+                        continue;
+                    }
+                    // 工期为数值单元格
+                    if (col.fixed() == Col.DURATION) {
+                        Integer days = durationValue(card, tree, effective);
+                        if (days != null) {
+                            row.createCell(i).setCellValue(days.doubleValue());
+                        }
+                        continue;
+                    }
+                    String value = switch (col.fixed()) {
                         case WBS -> wbs.get(card.getId());
                         case TITLE -> card.getTitle();
-                        case MILESTONE -> Boolean.TRUE.equals(card.getMilestone()) ? yesNo(true, en) : yesNo(false, en);
+                        case MILESTONE -> yesNo(Boolean.TRUE.equals(card.getMilestone()), en);
                         case PREDECESSORS -> String.join(";", predsBySuccessor.getOrDefault(card.getId(), List.of()));
                         case STATUS -> optionDisplay(statusProp, asString(props.get("status")));
                         case PRIORITY -> optionDisplay(priorityProp, asString(props.get("priority")));
-                        case ASSIGNEE -> {
-                            Object assignee = memberPropId == null ? null : props.get(memberPropId);
-                            yield assignee == null ? null
-                                    : nicknames.getOrDefault(Long.valueOf(assignee.toString()), null);
-                        }
-                        case START_DATE -> dateText(asString(props.get(GanttProjectService.PROP_START_DATE)));
-                        case DUE_DATE -> dateText(asString(props.get(GanttProjectService.PROP_DUE_DATE)));
+                        // WBS 项目起止日期取有效日期（摘要行卷算），非 WBS 取属性原值
+                        case START_DATE -> hasWbs
+                                ? dateText(asString(effective.starts().get(card.getId())))
+                                : dateText(asString(props.get(GanttProjectService.PROP_START_DATE)));
+                        case DUE_DATE -> hasWbs
+                                ? dateText(asString(effective.ends().get(card.getId())))
+                                : dateText(asString(props.get(GanttProjectService.PROP_DUE_DATE)));
+                        // member 属性已按属性名成列，ASSIGNEE 固定列仅导入匹配用
+                        case ASSIGNEE, DURATION -> null;
                     };
                     if (value != null && !value.isEmpty()) {
                         row.createCell(i).setCellValue(value);
@@ -175,14 +208,14 @@ public class TaskExcelService {
 
     // ---------- 导入模板 ----------
 
-    /** 下载导入模板：固定表头 + 一行示例（WBS 列按项目是否启用输出） */
+    /** 下载导入模板：与导出同构的表头 + 一行示例（WBS 列按项目是否启用输出） */
     public byte[] importTemplate(Long userId, Long projectId) {
         Project project = checkProject(projectId);
         permissionService.checkPermission(userId, projectId, ProjectPermission.MANAGE_PROJECT_CARDS);
         boolean hasWbs = ganttProjectService.hasWbs(project);
         boolean en = isEnglish();
         List<JsonNode> template = parseTemplate(project);
-        List<Col> cols = columns(hasWbs);
+        List<ExportColumn> cols = exportColumns(hasWbs, template);
         try (XSSFWorkbook wb = new XSSFWorkbook()) {
             Sheet sheet = wb.createSheet("Tasks");
             Row header = sheet.createRow(0);
@@ -192,13 +225,20 @@ public class TaskExcelService {
             bold.setFont(font);
             for (int i = 0; i < cols.size(); i++) {
                 Cell cell = header.createCell(i);
-                cell.setCellValue(header(cols.get(i), en));
+                cell.setCellValue(columnHeader(cols.get(i), en));
                 cell.setCellStyle(bold);
             }
             Row sample = sheet.createRow(1);
             for (int i = 0; i < cols.size(); i++) {
-                Col col = cols.get(i);
-                String value = switch (col) {
+                ExportColumn col = cols.get(i);
+                if (col.prop() != null) {
+                    continue;
+                }
+                if (col.fixed() == Col.DURATION) {
+                    sample.createCell(i).setCellValue(1);
+                    continue;
+                }
+                String value = switch (col.fixed()) {
                     case WBS -> "1";
                     case TITLE -> en ? "Example task" : "示例任务";
                     case MILESTONE -> yesNo(false, en);
@@ -570,22 +610,93 @@ public class TaskExcelService {
         result.getErrors().add(new TaskImportErrorVO(row, MessageUtil.get(messageKey, args)));
     }
 
-    private List<Col> columns(boolean hasWbs) {
-        List<Col> cols = new ArrayList<>();
+    /**
+     * 导出列序：固定前置列（WBS编码/标题/工期/里程碑/前置任务，后四者仅 WBS）+
+     * 模板属性按顺序成列（跳过 wbs；内置 status/priority/startDate/dueDate 用固定双语表头保证导入回环）。
+     */
+    private List<ExportColumn> exportColumns(boolean hasWbs, List<JsonNode> template) {
+        List<ExportColumn> cols = new ArrayList<>();
         if (hasWbs) {
-            cols.add(Col.WBS);
+            cols.add(ExportColumn.fixed(Col.WBS));
         }
-        cols.add(Col.TITLE);
+        cols.add(ExportColumn.fixed(Col.TITLE));
         if (hasWbs) {
-            cols.add(Col.MILESTONE);
-            cols.add(Col.PREDECESSORS);
+            cols.add(ExportColumn.fixed(Col.DURATION));
+            cols.add(ExportColumn.fixed(Col.MILESTONE));
+            cols.add(ExportColumn.fixed(Col.PREDECESSORS));
         }
-        cols.add(Col.STATUS);
-        cols.add(Col.PRIORITY);
-        cols.add(Col.ASSIGNEE);
-        cols.add(Col.START_DATE);
-        cols.add(Col.DUE_DATE);
+        for (JsonNode prop : template) {
+            String id = prop.path("id").asText("");
+            if (GanttProjectService.PROP_WBS.equals(id)) {
+                continue;
+            }
+            Col fixed = switch (id) {
+                case "status" -> Col.STATUS;
+                case "priority" -> Col.PRIORITY;
+                case GanttProjectService.PROP_START_DATE -> Col.START_DATE;
+                case GanttProjectService.PROP_DUE_DATE -> Col.DUE_DATE;
+                default -> null;
+            };
+            cols.add(fixed != null ? ExportColumn.fixed(fixed) : ExportColumn.ofProp(prop));
+        }
         return cols;
+    }
+
+    /** 列表头：固定列用双语文案，属性列用属性名 */
+    private String columnHeader(ExportColumn col, boolean en) {
+        if (col.fixed() != null) {
+            return header(col.fixed(), en);
+        }
+        return col.prop().path("name").asText(col.prop().path("id").asText(""));
+    }
+
+    /**
+     * 工期（自然日含首日）：摘要按卷算起止 diff+1；叶子里程碑=0、
+     * 显式 durationDays 优先、否则起止 diff+1；未排期返回 null（留空）。
+     */
+    private Integer durationValue(Block card, GanttProjectService.TaskTree tree,
+                                  GanttProjectService.EffectiveDates effective) {
+        LocalDate start = effective.starts().get(card.getId());
+        LocalDate end = effective.ends().get(card.getId());
+        boolean summary = tree.childCount().getOrDefault(card.getId(), 0) > 0;
+        if (summary) {
+            return start != null && end != null ? (int) ChronoUnit.DAYS.between(start, end) + 1 : null;
+        }
+        if (Boolean.TRUE.equals(card.getMilestone())) {
+            return start != null ? 0 : null;
+        }
+        if (card.getDurationDays() != null && card.getDurationDays() > 0) {
+            return card.getDurationDays();
+        }
+        return start != null && end != null ? (int) ChronoUnit.DAYS.between(start, end) + 1 : null;
+    }
+
+    /** 动态属性值 → 导出文本：select/multiSelect 解析选项，member 解析昵称，checkbox 是/否，date 取前 10 位 */
+    private String propValueText(JsonNode prop, Object value, Map<Long, String> nicknames, boolean en) {
+        if (value == null) {
+            return null;
+        }
+        String type = prop.path("type").asText("");
+        return switch (type) {
+            case "select" -> optionDisplay(prop, asString(value));
+            case "multiSelect" -> {
+                if (!(value instanceof List<?> list)) {
+                    yield null;
+                }
+                List<String> texts = new ArrayList<>();
+                for (Object optionId : list) {
+                    String text = optionDisplay(prop, asString(optionId));
+                    if (text != null && !text.isEmpty()) {
+                        texts.add(text);
+                    }
+                }
+                yield texts.isEmpty() ? null : String.join(", ", texts);
+            }
+            case "checkbox" -> yesNo(value instanceof Boolean b ? b : Boolean.parseBoolean(value.toString()), en);
+            case "member" -> nicknames.getOrDefault(Long.valueOf(value.toString()), null);
+            case "date" -> dateText(asString(value));
+            default -> asString(value);
+        };
     }
 
     private String header(Col col, boolean en) {
@@ -700,6 +811,20 @@ public class TaskExcelService {
         return null;
     }
 
+    /** 全部 member 类型属性 id（导出时每个 member 属性各自成列） */
+    private List<String> memberPropIds(List<JsonNode> template) {
+        List<String> ids = new ArrayList<>();
+        for (JsonNode node : template) {
+            if ("member".equals(node.path("type").asText(null))) {
+                String id = node.path("id").asText(null);
+                if (id != null) {
+                    ids.add(id);
+                }
+            }
+        }
+        return ids;
+    }
+
     /** 选项 id → 显示值（孤儿 id 返回 null） */
     private String optionDisplay(JsonNode prop, String optionId) {
         if (prop == null || optionId == null || optionId.isEmpty()) {
@@ -756,16 +881,19 @@ public class TaskExcelService {
         return byName;
     }
 
-    /** 批量查询负责人昵称（避免 N+1） */
-    private Map<Long, String> assigneeNicknames(List<Block> cards, String memberPropId) {
-        if (memberPropId == null) {
+    /** 批量查询负责人昵称（避免 N+1，覆盖全部 member 属性） */
+    private Map<Long, String> assigneeNicknames(List<Block> cards, List<String> memberPropIds) {
+        if (memberPropIds.isEmpty()) {
             return Map.of();
         }
         Set<Long> userIds = new HashSet<>();
         for (Block card : cards) {
-            Object value = properties(card).get(memberPropId);
-            if (value != null) {
-                userIds.add(Long.valueOf(value.toString()));
+            Map<String, Object> props = properties(card);
+            for (String propId : memberPropIds) {
+                Object value = props.get(propId);
+                if (value != null) {
+                    userIds.add(Long.valueOf(value.toString()));
+                }
             }
         }
         if (userIds.isEmpty()) {

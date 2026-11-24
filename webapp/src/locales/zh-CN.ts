@@ -540,6 +540,7 @@ export default {
     builtinAdded: '（已添加）',
     settingsTitle: '设置属性',
     settingsHint: '点击属性名展开编辑：可重命名、调整类型、编辑选项，或删除与新增属性。',
+    dragHint: '拖动属性可调整显示顺序，必要字段置顶锁定。',
     wbsHint: '添加「WBS 编码」解锁层级、甘特图、依赖（FS/SS/FF/SF）与 MS Project 导出，自动绑定开始/截止日期，必要字段不可删除。',
     startDateRequiresWbs: '开始日期属性需先添加 WBS 编码属性',
     requiredTag: '必要字段',
