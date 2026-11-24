@@ -5,6 +5,7 @@ import {
   addDays,
   anchorX,
   arrowPoints,
+  barDurationDays,
   barGeometry,
   buildMonthSegments,
   buildTimeColumns,
@@ -188,6 +189,57 @@ describe('barGeometry', () => {
   })
 })
 
+describe('barDurationDays', () => {
+  const rangeStart = parseDate('2026-03-01') as Date
+
+  /** 取几何后算工期（与 GanttView 左表列同源） */
+  const durationOf = (node: TaskTreeNode, previewDates = false): number => {
+    const geo = barGeometry(node, 'startDate', 'dueDate', rangeStart, 10)!
+    return barDurationDays(node, geo, previewDates)
+  }
+
+  it('里程碑工期恒 0（不按同日 diff+1 算成 1 天）', () => {
+    const ms = leaf(1, { startDate: '2026-03-02', dueDate: '2026-03-02' }, { milestone: true })
+    expect(durationOf(ms)).toBe(0)
+  })
+
+  it('里程碑优先于显式工期', () => {
+    const ms = leaf(1, { startDate: '2026-03-02', dueDate: '2026-03-02' }, { milestone: true, durationDays: 3 })
+    expect(durationOf(ms)).toBe(0)
+  })
+
+  it('未标记同日任务为 1 天', () => {
+    expect(durationOf(leaf(1, { startDate: '2026-03-02', dueDate: '2026-03-02' }))).toBe(1)
+  })
+
+  it('叶子显式工期优先于起止日期', () => {
+    const node = leaf(1, { startDate: '2026-03-02', dueDate: '2026-03-04' }, { durationDays: 7 })
+    expect(durationOf(node)).toBe(7)
+  })
+
+  it('无显式工期按起止 diff+1', () => {
+    expect(durationOf(leaf(1, { startDate: '2026-03-02', dueDate: '2026-03-04' }))).toBe(3)
+  })
+
+  it('摘要行忽略自身显式工期，按卷算起止推导', () => {
+    const node = {
+      ...summary(1, [
+        leaf(2, { startDate: '2026-03-02', dueDate: '2026-03-02' }),
+        leaf(3, { startDate: '2026-03-06', dueDate: '2026-03-06' }),
+      ]),
+      durationDays: 99,
+    }
+    expect(durationOf(node)).toBe(5)
+  })
+
+  it('拖拽预览中以日期为准，忽略显式工期（里程碑仍为 0）', () => {
+    const node = leaf(1, { startDate: '2026-03-02', dueDate: '2026-03-04' }, { durationDays: 7 })
+    expect(durationOf(node, true)).toBe(3)
+    const ms = leaf(2, { startDate: '2026-03-02', dueDate: '2026-03-02' }, { milestone: true })
+    expect(durationOf(ms, true)).toBe(0)
+  })
+})
+
 describe('computeRange', () => {
   it('取全部已排期任务 min/max 并左右留白', () => {
     const rows = [
@@ -293,6 +345,52 @@ describe('时间刻度', () => {
   })
 })
 
+describe('表头标签可见性（showLabel）', () => {
+  const range = { start: parseDate('2026-03-01') as Date, end: parseDate('2026-03-31') as Date, totalDays: 31 }
+
+  it('月份分段：被 range 边界截短的首段（上一个月份）隐藏标签，完整段保留', () => {
+    const r = { start: parseDate('2026-03-28') as Date, end: parseDate('2026-04-20') as Date, totalDays: 24 }
+    const segs = buildMonthSegments(r, 10)
+    expect(segs).toHaveLength(2)
+    expect(segs[0].width).toBe(4 * 10) // 3/28–3/31 仅 4 天，窄于标签
+    expect(segs[0].showLabel).toBe(false)
+    expect(segs[1].width).toBe(20 * 10) // 4/1–4/20
+    expect(segs[1].showLabel).toBe(true)
+  })
+
+  it('隐藏仅影响渲染，label 文本保留', () => {
+    const r = { start: parseDate('2026-03-28') as Date, end: parseDate('2026-04-20') as Date, totalDays: 24 }
+    expect(buildMonthSegments(r, 10)[0].label).toBe('2026年3月')
+  })
+
+  it('maxWidth 收缩末月段后重新判定标签可见性', () => {
+    const segs = buildMonthSegments(range, 10, 30)
+    expect(segs[0].showLabel).toBe(false) // 310px 被收缩到 30px
+  })
+
+  it('周粒度：被 range 起点截短的首周列隐藏标签，后续整周列保留', () => {
+    const r = { start: parseDate('2026-03-28') as Date, end: parseDate('2026-04-20') as Date, totalDays: 24 }
+    const cols = buildTimeColumns(r, 'week', 10)
+    expect(cols[0].width).toBe(2 * 10) // 首个不完整周仅 2 天
+    expect(cols[0].showLabel).toBe(false)
+    expect(cols[1].width).toBe(7 * 10)
+    expect(cols[1].showLabel).toBe(true)
+  })
+
+  it('maxWidth 收缩末列后重新判定列标签可见性', () => {
+    const dayCols = buildTimeColumns(range, 'day', 20, 615)
+    const last = dayCols[dayCols.length - 1]
+    expect(last.width).toBe(15) // 620 被收缩到 615
+    expect(last.showLabel).toBe(false)
+    expect(dayCols[dayCols.length - 2].showLabel).toBe(true)
+  })
+
+  it('窄于可读宽的列仍保留 label 文本', () => {
+    const dayCols = buildTimeColumns(range, 'day', 20, 615)
+    expect(dayCols[dayCols.length - 1].label).toBe('31')
+  })
+})
+
 describe('FS 连线路径', () => {
   it('目标在右侧：右-竖-右肘形，返回 SVG path 字符串', () => {
     const path = elbowPath(100, 18, 300, 54)
@@ -339,26 +437,42 @@ describe('四类型依赖几何', () => {
     expect(dependencyPath(300, 18, 100, 54, 'finish', 'start')).toBe(elbowPath(300, 18, 100, 54))
   })
 
-  it('SS：条首向左出线，入点在目标条首左侧（箭头指右），逆向时绕行', () => {
+  it('SS：常规形态只要 1 段竖线（左出竖下后右行对齐箭头）', () => {
     const path = dependencyPath(100, 18, 300, 54, 'start', 'start')
-    const firstH = Number(/H (-?\d+)/.exec(path)?.[1])
-    expect(firstH).toBeLessThan(100) // 向左出线
-    expect(path.endsWith('H 293')).toBe(true) // 尖端 x2-7，箭头指右
-    expect((path.match(/V /g) ?? []).length).toBeGreaterThanOrEqual(2) // 出左入左需绕行
+    expect(path).toBe('M 100 18 H 83 V 54 H 293')
+    expect((path.match(/V /g) ?? []).length).toBe(1)
   })
 
-  it('FF：条尾向右出线，入点在目标条尾右侧（箭头指左），逆向时绕行', () => {
+  it('SS：后置条首在左侧时竖段移到条首外，仍保持 1 段竖线', () => {
+    const path = dependencyPath(300, 18, 100, 54, 'start', 'start')
+    expect(path).toBe('M 300 18 H 83 V 54 H 93')
+    expect((path.match(/V /g) ?? []).length).toBe(1)
+  })
+
+  it('FF：竖段落在目标条尾箭头外侧平行线，折下后左行对齐箭头（1 段竖线）', () => {
     const path = dependencyPath(100, 18, 300, 54, 'finish', 'finish')
-    const firstH = Number(/H (-?\d+)/.exec(path)?.[1])
-    expect(firstH).toBeGreaterThan(100) // 向右出线
-    expect(path.endsWith('H 307')).toBe(true) // 尖端 x2+7，箭头指左
-    expect((path.match(/V /g) ?? []).length).toBeGreaterThanOrEqual(2)
+    const bend = Number(/H (-?\d+)/.exec(path)?.[1])
+    expect(bend).toBeGreaterThan(307) // 折弯 x 越过尖端 x2+7，末段得以左行
+    expect(path).toBe('M 100 18 H 317 V 54 H 307')
+    expect((path.match(/V /g) ?? []).length).toBe(1)
+  })
+
+  it('FF：前置条尾已在目标右侧时紧贴出线端折弯', () => {
+    const path = dependencyPath(300, 18, 100, 54, 'finish', 'finish')
+    expect(path).toBe('M 300 18 H 317 V 54 H 107')
+    expect((path.match(/V /g) ?? []).length).toBe(1)
   })
 
   it('SF：目标在左侧时同向直连（左出左入，横-竖-横）', () => {
     const path = dependencyPath(300, 18, 100, 54, 'start', 'finish')
     expect((path.match(/V /g) ?? []).length).toBe(1) // 无需绕行
     expect(path.endsWith('H 107')).toBe(true) // 入点在条尾右侧，箭头指左
+  })
+
+  it('SF：出线方向与入线侧冲突时仍绕行行间（保留 2 段竖线）', () => {
+    const path = dependencyPath(100, 18, 300, 54, 'start', 'finish')
+    expect((path.match(/V /g) ?? []).length).toBe(2)
+    expect(path.endsWith('H 307')).toBe(true)
   })
 
   it('anchorX：普通条 start=x / finish=x+width，里程碑两锚点均在菱形中心', () => {

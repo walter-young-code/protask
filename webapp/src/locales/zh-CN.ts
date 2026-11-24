@@ -434,6 +434,7 @@ export default {
     legendDone: '已完成',
     legendMilestone: '里程碑',
     legendSummary: '摘要任务',
+    legendDependency: '依赖关系',
     dependencyDeleteTitle: '删除依赖',
     dependencyDeleteConfirm: '确定删除这条依赖连线吗？',
     dependencyDeleted: '依赖已删除',

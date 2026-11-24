@@ -7,8 +7,8 @@ export const ROW_HEIGHT = 32
 export const BAR_HEIGHT = 16
 /** 条尾依赖连接点半径 */
 export const BAR_CONNECTOR_RADIUS = 5
-/** 连接点圆心相对条尾的偏移（整体悬于条体端外，与拉伸手柄留出间隙） */
-export const BAR_CONNECTOR_OFFSET = 10
+/** 连接点圆心相对条尾的偏移（整体悬于条体端外，紧贴条尾仅留桥接线短间隙） */
+export const BAR_CONNECTOR_OFFSET = 7
 /** 表头总高（月份行 + 日/周/月刻度行） */
 export const HEADER_HEIGHT = 48
 /** 月份行高 */
@@ -27,6 +27,10 @@ export const TASK_COL_MAX_WIDTH = 560
 export const LEFT_WIDTH = LEFT_FIXED_WIDTH + TASK_COL_DEFAULT_WIDTH
 /** 任务列右边界相对列宽的偏移（分隔条/列参考线定位，= 内边距 + 展开 + WBS + 列隙 + 半隙） */
 export const TASK_COL_BOUNDARY_OFFSET = 80
+/** 刻度列标签完整显示所需的最小列宽（日=单日号 / 周=月日 / 月=月份名） */
+export const COLUMN_LABEL_MIN_WIDTH: Record<GanttScale, number> = { day: 16, week: 30, month: 28 }
+/** 月份分段标签完整显示所需的最小段宽（12px 粗体「2026年11月」约 64px + 左内缩 6 + 右留白 8） */
+export const MONTH_LABEL_MIN_WIDTH = 78
 
 /** 各缩放粒度下每天占用的像素宽度（紧凑网格） */
 export const PX_PER_DAY: Record<GanttScale, number> = {
@@ -50,6 +54,8 @@ export interface TimeColumn {
   width: number
   /** 日粒度下是否为周末（底纹用） */
   weekend: boolean
+  /** 列宽是否足以完整容纳标签（false 时不渲染文字，避免被截断） */
+  showLabel: boolean
 }
 
 /** 顶部月份分段 */
@@ -57,6 +63,8 @@ export interface MonthSegment {
   label: string
   x: number
   width: number
+  /** 段宽是否足以完整容纳含年份的标签（false 时不渲染文字） */
+  showLabel: boolean
 }
 
 /** 条体几何（已换算为 SVG 坐标） */
@@ -242,9 +250,31 @@ export function barGeometry(
   }
 }
 
+/**
+ * 左表工期列展示值（自然日）：里程碑恒 0（项目管理惯例，与 Excel/MSPDI 导出、任务设置弹窗同语义），
+ * 不按起止日期 diff+1 推导；非拖拽预览时叶子显式 durationDays 优先，其余按条体起止天数。
+ * previewDates=true 表示 geo 为拖拽预览几何，此时显式工期不参与（以预览日期为准）。
+ */
+export function barDurationDays(
+  node: TaskTreeNode,
+  geo: BarGeometry,
+  previewDates = false,
+): number {
+  if (geo.milestone) return 0
+  if (!previewDates && !node.children.length && node.durationDays != null && node.durationDays > 0) {
+    return node.durationDays
+  }
+  return durationDays(geo.start, geo.end)
+}
+
+/** 刻度列/月段的构造态：showLabel 待末列钳制后统一裁决 */
+type DraftColumn = Omit<TimeColumn, 'showLabel'>
+type DraftSegment = Omit<MonthSegment, 'showLabel'>
+
 /** 底部刻度列（日=每天/周=每周一/月=每月 1 号）；maxWidth 用于将末列钳制到精确铺满宽度 */
 export function buildTimeColumns(range: GanttRange, scale: GanttScale, pxPerDay: number, maxWidth?: number, locale = 'zh-CN'): TimeColumn[] {
-  const columns: TimeColumn[] = []
+  const columns: DraftColumn[] = []
+  const rangeEndEx = addDays(range.end, 1)
   if (scale === 'day') {
     for (let i = 0; i < range.totalDays; i++) {
       const date = addDays(range.start, i)
@@ -256,12 +286,8 @@ export function buildTimeColumns(range: GanttRange, scale: GanttScale, pxPerDay:
         weekend: isWeekend(date),
       })
     }
-    clampLast(columns, maxWidth)
-    return columns
-  }
-  if (scale === 'week') {
+  } else if (scale === 'week') {
     // 对齐到周一作为首列起点；首尾列钳制到 range 边界，避免负坐标裁掉标签
-    const rangeEndEx = addDays(range.end, 1)
     let cursor = startOfDay(range.start)
     const dow = (cursor.getDay() + 6) % 7
     cursor = addDays(cursor, -dow)
@@ -274,38 +300,37 @@ export function buildTimeColumns(range: GanttRange, scale: GanttScale, pxPerDay:
       columns.push({ date: cursor, label, x, width: diffDays(segStart, segEnd) * pxPerDay, weekend: false })
       cursor = next
     }
-    clampLast(columns, maxWidth)
-    return columns
-  }
-  // month
-  const rangeEndEx = addDays(range.end, 1)
-  let cursor = new Date(range.start.getFullYear(), range.start.getMonth(), 1)
-  while (cursor <= range.end) {
-    const next = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)
-    const segStart = cursor < range.start ? range.start : cursor
-    const segEnd = next > rangeEndEx ? rangeEndEx : next
-    const x = dateToX(segStart, range.start, pxPerDay)
-    columns.push({
-      date: cursor,
-      label: monthLabel(cursor, locale, false),
-      x,
-      width: diffDays(segStart, segEnd) * pxPerDay,
-      weekend: false,
-    })
-    cursor = next
+  } else {
+    let cursor = new Date(range.start.getFullYear(), range.start.getMonth(), 1)
+    while (cursor <= range.end) {
+      const next = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)
+      const segStart = cursor < range.start ? range.start : cursor
+      const segEnd = next > rangeEndEx ? rangeEndEx : next
+      const x = dateToX(segStart, range.start, pxPerDay)
+      columns.push({
+        date: cursor,
+        label: monthLabel(cursor, locale, false),
+        x,
+        width: diffDays(segStart, segEnd) * pxPerDay,
+        weekend: false,
+      })
+      cursor = next
+    }
   }
   clampLast(columns, maxWidth)
-  return columns
+  // 被 range 边界截短的首/尾列（含 maxWidth 收缩后的末列）窄于可读宽时不渲染标签
+  const minWidth = COLUMN_LABEL_MIN_WIDTH[scale]
+  return columns.map((c) => ({ ...c, showLabel: c.width >= minWidth }))
 }
 
 /** 顶部月份分段（跨整月，label 含年份）；maxWidth 用于将末段钳制到精确铺满宽度 */
 export function buildMonthSegments(range: GanttRange, pxPerDay: number, maxWidth?: number, locale = 'zh-CN'): MonthSegment[] {
-  const segments: MonthSegment[] = []
+  const segments: DraftSegment[] = []
   const rangeEndEx = addDays(range.end, 1)
   let cursor = new Date(range.start.getFullYear(), range.start.getMonth(), 1)
   while (cursor <= range.end) {
     const next = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)
-    // 首尾月段钳制到 range 边界，保证月份标签始终可见
+    // 首尾月段钳制到 range 边界（整月区间才有完整标签）
     const segStart = cursor < range.start ? range.start : cursor
     const segEnd = next > rangeEndEx ? rangeEndEx : next
     const x = dateToX(segStart, range.start, pxPerDay)
@@ -317,7 +342,8 @@ export function buildMonthSegments(range: GanttRange, pxPerDay: number, maxWidth
     cursor = next
   }
   clampLast(segments, maxWidth)
-  return segments
+  // 首段（上一个月份）与末段常被 range 边界截短，窄于标签可读宽时隐藏文字而非截断显示
+  return segments.map((s) => ({ ...s, showLabel: s.width >= MONTH_LABEL_MIN_WIDTH }))
 }
 
 /** 末段超出精确铺满宽度时收缩到边界（宽度归零则移除），避免右侧标签被裁 */
@@ -367,7 +393,10 @@ export function anchorX(geo: BarGeometry, end: BarEnd, pxPerDay: number): number
 /**
  * 四类型肘形连线路径：从前置锚点 (x1,y1) 到后置锚点 (x2,y2)。
  * 出线方向由前置端决定（finish 向右 / start 向左），入线方向由后置端决定
- * （start 从左入、箭头指右 / finish 从右入、箭头指左）；重叠/逆向时绕行行间避免穿条。
+ * （start 从左入、箭头指右 / finish 从右入、箭头指左）。
+ * 折弯数最小化：竖段只需同时落在「出线端连接点外」与「目标箭头入线侧外」，
+ * 末段横线就天然与箭头同向对齐，两点折弯即可收尾（FF/SS 不再绕行行间）；
+ * 两个候选位置都与出线方向冲突（重叠/逆向）时，才绕行行间避免穿条。
  */
 export function dependencyPath(
   x1: number, y1: number, x2: number, y2: number,
@@ -379,15 +408,21 @@ export function dependencyPath(
   const out = BAR_CONNECTOR_OFFSET + BAR_CONNECTOR_RADIUS + 5
   const inn = 12
   const arrow = 7
-  const outX = x1 + exitDir * out
   const inX = x2 - entryDir * inn
   const tipX = x2 - entryDir * arrow
-  // 同向且入点在前后直接走 横-竖-横；否则绕行行间
-  if (exitDir === entryDir && (inX - outX) * entryDir >= 0) {
-    return `M ${x1} ${y1} H ${outX} V ${y2} H ${tipX}`
+  // 候选一：紧贴出线端的竖段（FS/SF 常规形态）
+  const near = x1 + exitDir * out
+  if ((tipX - near) * entryDir > 0) {
+    return `M ${x1} ${y1} H ${near} V ${y2} H ${tipX}`
   }
+  // 候选二：竖段移到目标箭头外侧的平行线，折下后反向对准箭头（FF/SS 常规形态）
+  const far = x2 - entryDir * out
+  if ((far - x1) * exitDir > 0) {
+    return `M ${x1} ${y1} H ${far} V ${y2} H ${tipX}`
+  }
+  // 重叠/逆向：绕行行间避免穿条
   const midY = y1 + (y2 > y1 ? ROW_HEIGHT / 2 : -ROW_HEIGHT / 2)
-  return `M ${x1} ${y1} H ${outX} V ${midY} H ${inX} V ${y2} H ${tipX}`
+  return `M ${x1} ${y1} H ${near} V ${midY} H ${inX} V ${y2} H ${tipX}`
 }
 
 /** 连线箭头三角形顶点（尖端落在 x2,y2；dir 指定指向左/右，缺省右） */

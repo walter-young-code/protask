@@ -22,6 +22,7 @@ import {
   addDays,
   anchorX,
   arrowPoints,
+  barDurationDays,
   barGeometry,
   buildMonthSegments,
   buildTimeColumns,
@@ -98,20 +99,22 @@ const chartWidth = computed(() =>
 )
 const range = computed(() => fitRangeToWidth(baseRange.value, pxPerDay.value, chartWidth.value))
 const chartHeight = computed(() => Math.max(rows.value.length * ROW_HEIGHT, ROW_HEIGHT))
-/** 标签最小可读宽：末列/末段窄于该值时隐藏标签，避免右缘裁切 */
-const LABEL_MIN_WIDTH: Record<GanttScale, number> = { day: 16, week: 30, month: 28 }
-const columns = computed(() => {
-  const cols = buildTimeColumns(range.value, scale.value, pxPerDay.value, chartWidth.value, locale.value)
-  const last = cols[cols.length - 1]
-  if (last && last.width < LABEL_MIN_WIDTH[scale.value]) last.label = ''
-  return cols
-})
-const months = computed(() => {
-  const segs = buildMonthSegments(range.value, pxPerDay.value, chartWidth.value, locale.value)
-  const last = segs[segs.length - 1]
-  if (last && last.width < 78) last.label = ''
-  return segs
-})
+/** 刻度列与月份分段：标签可见性由构建函数按段宽裁决（首尾被 range 边界截短的段不渲染文字） */
+const columns = computed(() =>
+  buildTimeColumns(range.value, scale.value, pxPerDay.value, chartWidth.value, locale.value),
+)
+const months = computed(() =>
+  buildMonthSegments(range.value, pxPerDay.value, chartWidth.value, locale.value),
+)
+/**
+ * 日期网格竖分界线（各列左边界）：表头与图表共用同一组坐标，保证上下对齐。
+ * 跳过 x=0：该位置由左表固定列的 border-right 承担，重复描边会在边界叠成错位双线。
+ */
+const gridLines = computed(() => columns.value.map((c) => c.x).filter((x) => x > 0))
+/** 月份行分界线（取各段右边界）：跳过 x=0 同理，末界由滚动容器边框收口 */
+const monthLines = computed(() =>
+  months.value.map((m) => m.x + m.width).filter((x) => x > 0 && x < chartWidth.value),
+)
 
 /** 周末底纹（按天，适配各缩放粒度） */
 const weekendRects = computed(() => {
@@ -163,6 +166,8 @@ interface DragState {
 const drag = ref<DragState | null>(null)
 const chartSvg = ref<SVGSVGElement | null>(null)
 const scrollEl = ref<HTMLElement | null>(null)
+/** 悬停中的依赖 id：命中层在条体之下、绘制层在条体之上，跨层靠它联动高亮 */
+const hoverDep = ref<number | null>(null)
 
 /** 几何体点击类型菜单（零位移点击条体/菱形切换普通任务/里程碑） */
 const typeMenu = ref<{ taskId: number; x: number; y: number } | null>(null)
@@ -304,14 +309,13 @@ const bars = computed(() =>
 /** 左表行：附工期（自然日）/开始/截止，摘要行按子孙汇总，拖拽中随条体预览同步 */
 const leftRows = computed(() =>
   bars.value.map(({ row, geo }) => {
-    // 工期列：叶子任务显式工期优先（拖拽预览中仍按日期推导），其余按起止 diff+1
+    // 工期列：里程碑恒 0；否则叶子显式工期优先（拖拽预览中按日期推导），其余按起止 diff+1
     const dragging = drag.value?.taskId === row.id && drag.value.mode !== 'link'
-    const explicit = !dragging && !row.children.length && row.durationDays != null && row.durationDays > 0
     return {
       row,
       start: geo ? formatDate(geo.start) : '—',
       due: geo ? formatDate(geo.end) : '—',
-      duration: geo ? (explicit ? row.durationDays! : durationDays(geo.start, geo.end)) : null,
+      duration: geo ? barDurationDays(row, geo, dragging) : null,
     }
   }),
 )
@@ -614,6 +618,7 @@ onBeforeUnmount(() => {
         <span class="legend-item"><i class="legend-diamond" />{{ t('gantt.legendMilestone') }}</span>
         <span class="legend-item"><i class="legend-summary" />{{ t('gantt.legendSummary') }}</span>
         <span class="legend-item"><i class="legend-swatch legend-auto" />{{ t('gantt.autoTask') }}</span>
+        <span class="legend-item"><i class="legend-dep" />{{ t('gantt.legendDependency') }}</span>
       </div>
 
       <el-empty v-if="!scheduleBound" :description="t('gantt.noDateProperty')" :image-size="70" />
@@ -656,7 +661,7 @@ onBeforeUnmount(() => {
               <g>
                 <template v-for="(m, i) in months" :key="`m${i}`">
                   <rect :x="m.x" :y="0" :width="m.width" :height="MONTH_ROW_HEIGHT" class="month-cell" />
-                  <text :x="m.x + 6" :y="MONTH_ROW_HEIGHT / 2 + 4" class="month-text">{{ m.label }}</text>
+                  <text v-if="m.showLabel" :x="m.x + 6" :y="MONTH_ROW_HEIGHT / 2 + 4" class="month-text">{{ m.label }}</text>
                 </template>
               </g>
               <g>
@@ -669,12 +674,41 @@ onBeforeUnmount(() => {
                     :class="['col-cell', { weekend: c.weekend }]"
                   />
                   <text
+                    v-if="c.showLabel"
                     :x="c.x + c.width / 2"
                     :y="MONTH_ROW_HEIGHT + (HEADER_HEIGHT - MONTH_ROW_HEIGHT) / 2 + 4"
                     class="col-text"
                     text-anchor="middle"
                   >{{ c.label }}</text>
                 </template>
+              </g>
+              <!-- 分界线单独成组（矩形只留底色）：与图表区共用 gridLines，上下边界完全对齐 -->
+              <g>
+                <line
+                  v-for="(x, i) in monthLines"
+                  :key="`ml${i}`"
+                  :x1="x"
+                  :y1="0"
+                  :x2="x"
+                  :y2="MONTH_ROW_HEIGHT"
+                  class="grid-line"
+                />
+                <line
+                  v-for="(x, i) in gridLines"
+                  :key="`cl${i}`"
+                  :x1="x"
+                  :y1="MONTH_ROW_HEIGHT"
+                  :x2="x"
+                  :y2="HEADER_HEIGHT"
+                  class="grid-line"
+                />
+                <line
+                  :x1="0"
+                  :y1="MONTH_ROW_HEIGHT"
+                  :x2="chartWidth"
+                  :y2="MONTH_ROW_HEIGHT"
+                  class="grid-line"
+                />
               </g>
             </svg>
           </div>
@@ -732,13 +766,13 @@ onBeforeUnmount(() => {
                 :height="chartHeight"
                 class="weekend-shade"
               />
-              <!-- 列分隔线 -->
+              <!-- 列分隔线（与表头同一组坐标，已排除 x=0 处的边界线） -->
               <line
-                v-for="(c, i) in columns"
+                v-for="(x, i) in gridLines"
                 :key="`gl${i}`"
-                :x1="c.x"
+                :x1="x"
                 :y1="0"
-                :x2="c.x"
+                :x2="x"
                 :y2="chartHeight"
                 class="grid-line"
               />
@@ -762,12 +796,17 @@ onBeforeUnmount(() => {
                 class="today-line"
               />
 
-              <!-- 依赖连线（四类型，tooltip 显示类型+延迟，点击删除） -->
-              <g v-for="link in links" :key="`dep${link.dep.id}`" class="dep-group" @click="handleLinkClick(link.dep)">
+              <!-- 依赖连线命中层（四类型，tooltip 显示类型+延迟，点击删除）：只占位不绘制，线段本体在上层跟随条体之上 -->
+              <g
+                v-for="link in links"
+                :key="`dep${link.dep.id}`"
+                class="dep-group"
+                @mouseenter="hoverDep = link.dep.id"
+                @mouseleave="hoverDep = null"
+                @click="handleLinkClick(link.dep)"
+              >
                 <title>{{ link.label }}</title>
                 <path :d="link.path" class="dep-hit" />
-                <path :d="link.path" class="dep-line" />
-                <polygon :points="link.arrow" class="dep-arrow" />
               </g>
               <!-- 拖拽建联的目标半区高亮 -->
               <rect
@@ -778,8 +817,6 @@ onBeforeUnmount(() => {
                 :height="ROW_HEIGHT"
                 class="link-target-highlight"
               />
-              <!-- 拖拽中的临时连线 -->
-              <path v-if="tempLink" :d="tempLink" class="dep-temp" />
 
               <!-- 条体 -->
               <g v-for="bar in bars" :key="`bar${bar.row.id}`">
@@ -883,6 +920,20 @@ onBeforeUnmount(() => {
                   class="unscheduled-text"
                 >{{ t('gantt.unscheduled') }}</text>
               </g>
+
+              <!-- 依赖线绘制层：整条灰点线压在条体之上，过条体不拆段、不做护边（纯展示，不拦截拖拽/悬停） -->
+              <g class="dep-visual">
+                <g
+                  v-for="link in links"
+                  :key="`depv${link.dep.id}`"
+                  :class="{ 'is-hover': hoverDep === link.dep.id }"
+                >
+                  <path :d="link.path" class="dep-line" />
+                  <polygon :points="link.arrow" class="dep-arrow" />
+                </g>
+                <!-- 拖拽中的临时连线 -->
+                <path v-if="tempLink" :d="tempLink" class="dep-temp" />
+              </g>
             </svg>
             <!-- 几何体点击类型菜单：普通任务 / 里程碑 -->
             <div
@@ -926,6 +977,8 @@ onBeforeUnmount(() => {
   --gantt-weekend: var(--el-fill-color-light);
   --gantt-header-bg: var(--el-fill-color-light);
   --gantt-left-bg: var(--el-bg-color);
+  /* 依赖线中性灰：深于网格（border-color-lighter）、浅于摘要条（text-regular），避开待开始的#c8ccd4 */
+  --gantt-dep: var(--app-text-secondary);
 }
 
 .gantt-toolbar {
@@ -993,6 +1046,14 @@ onBeforeUnmount(() => {
   display: inline-block;
   /* 与摘要条同轮廓：长条 + 两端三角下标 */
   clip-path: polygon(0 0, 100% 0, 100% 100%, calc(100% - 4px) 50%, 4px 50%, 0 100%);
+}
+
+/* 依赖图例：与连线同灰同点距的圆点串 */
+.legend-dep {
+  width: 18px;
+  height: 2px;
+  display: inline-block;
+  background: radial-gradient(circle at 1px 1px, var(--gantt-dep) 0 1px, transparent 1.4px) 0 0 / 4px 2px repeat-x;
 }
 
 .gantt-scroll {
@@ -1076,8 +1137,6 @@ onBeforeUnmount(() => {
 
 .month-cell {
   fill: var(--gantt-header-bg);
-  stroke: var(--gantt-grid);
-  stroke-width: 1;
 }
 
 .month-text {
@@ -1088,8 +1147,6 @@ onBeforeUnmount(() => {
 
 .col-cell {
   fill: transparent;
-  stroke: var(--gantt-grid);
-  stroke-width: 1;
 }
 
 .col-cell.weekend {
@@ -1332,11 +1389,17 @@ onBeforeUnmount(() => {
 .weekend-shade {
   fill: var(--gantt-weekend);
   opacity: 0.5;
+  shape-rendering: crispEdges;
 }
 
+/*
+ * 网格线落在整数坐标上，默认抗锯齿会摊成两条半像素灰线（边界处尤其显粗），
+ * 与固定列的 1px 实线分隔线对不齐；crispEdges 让描边贴整像素，上下两段网格与分隔线合一。
+ */
 .grid-line {
   stroke: var(--gantt-grid);
   stroke-width: 1;
+  shape-rendering: crispEdges;
 }
 
 .row-line {
@@ -1347,6 +1410,7 @@ onBeforeUnmount(() => {
   stroke: var(--el-color-danger);
   stroke-width: 1.5;
   stroke-dasharray: 4 3;
+  shape-rendering: crispEdges;
 }
 
 .bar-body {
@@ -1437,25 +1501,36 @@ onBeforeUnmount(() => {
   stroke-width: 12;
 }
 
-.dep-line {
-  fill: none;
-  stroke: var(--el-color-primary);
-  stroke-width: 1.5;
+/* 依赖线绘制层：跨在条体之上，事件全部透传，命中与点击删除仍由下层 dep-hit 负责 */
+.dep-visual {
+  pointer-events: none;
 }
 
-.dep-group:hover .dep-line {
-  stroke: var(--el-color-danger);
+/* 依赖线：小圆点虚线（0 长度段 + 圆头 = 点径即 stroke-width），中性灰退为背景关系层 */
+.dep-line {
+  fill: none;
+  stroke: var(--gantt-dep);
+  stroke-width: 1.6;
+  stroke-dasharray: 0 4;
+  stroke-linecap: round;
+}
+
+/* 悬停追溯整条路径：转主色实线，与静态灰点区分开 */
+.dep-visual .is-hover .dep-line {
+  stroke: var(--el-color-primary);
   stroke-width: 2;
+  stroke-dasharray: none;
 }
 
 .dep-arrow {
+  fill: var(--gantt-dep);
+}
+
+.dep-visual .is-hover .dep-arrow {
   fill: var(--el-color-primary);
 }
 
-.dep-group:hover .dep-arrow {
-  fill: var(--el-color-danger);
-}
-
+/* 拖拽建联中的临时线：保持主色长虚线，与已存依赖的灰点线形成“进行中/已存在”对比 */
 .dep-temp {
   fill: none;
   stroke: var(--el-color-primary);

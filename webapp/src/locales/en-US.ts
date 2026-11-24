@@ -440,6 +440,7 @@ export default {
     legendDone: 'Done',
     legendMilestone: 'Milestone',
     legendSummary: 'Summary task',
+    legendDependency: 'Dependency',
     dependencyDeleteTitle: 'Delete dependency',
     dependencyDeleteConfirm: 'Delete this dependency link?',
     dependencyDeleted: 'Dependency deleted',
