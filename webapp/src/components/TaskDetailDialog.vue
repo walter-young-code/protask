@@ -302,16 +302,17 @@ function snapshotForm(): string {
 /** 是否有未保存修改（预览模式下改动标题/属性后据此显示保存按钮） */
 const formDirty = computed(() => snapshotForm() !== initialSnapshot.value)
 
-/** 标题输入框自适应宽度：WBS 前缀紧贴名称、整组居中（按 20px/600 字体实测） */
+/** 标题输入框宽度：与正文同字体栈实测，下限 240 保证较宽单行，上限 720（960 弹窗内可容纳） */
 const titleMeasureCtx = (() => {
   const ctx = document.createElement('canvas').getContext('2d')
-  if (ctx) ctx.font = '600 20px sans-serif'
+  if (ctx) ctx.font = '600 20px "Helvetica Neue", Helvetica, "PingFang SC", "Microsoft YaHei", Arial, sans-serif'
   return ctx
 })()
 const titleInputWidth = computed(() => {
-  if (!titleMeasureCtx) return 240
+  if (!titleMeasureCtx) return 320
   const text = form.title || t('task.titlePlaceholder')
-  return Math.min(640, Math.max(96, Math.ceil(titleMeasureCtx.measureText(text).width) + 24))
+  // +40：内边距 24px + 16px 余量，避免实际渲染略宽于 canvas 测量导致单词被折行
+  return Math.min(720, Math.max(240, Math.ceil(titleMeasureCtx.measureText(text).width) + 40))
 })
 
 /** Markdown 工具条动作定义 */
@@ -1284,6 +1285,8 @@ function formatTime(value?: string) {
 .detail-title {
   margin-bottom: 0;
   max-width: 100%;
+  /* 不被 flex 压缩到计算宽度以下，避免单词被迫断行 */
+  flex-shrink: 0;
 }
 
 .detail-title :deep(.el-textarea__inner) {
@@ -1295,7 +1298,9 @@ function formatTime(value?: string) {
   font-weight: 600;
   line-height: 1.4;
   text-align: center;
-  overflow-wrap: anywhere;
+  /* 只在空白边界换行，不把单词拦腰截断 */
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .detail-title :deep(.el-textarea__inner:hover) {
@@ -1309,7 +1314,9 @@ function formatTime(value?: string) {
 .detail-title-readonly {
   margin: 0;
   min-width: 0;
-  overflow-wrap: anywhere;
+  /* 只在空白边界换行，不把单词拦腰截断 */
+  overflow-wrap: normal;
+  word-break: normal;
   font-size: 20px;
   font-weight: 600;
   text-align: center;

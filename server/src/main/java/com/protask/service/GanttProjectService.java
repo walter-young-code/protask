@@ -80,8 +80,8 @@ public class GanttProjectService {
     /** 支持的依赖类型（对齐 MS Project 四种链接类型） */
     public static final Set<String> DEPENDENCY_TYPES = Set.of("FS", "SS", "FF", "SF");
 
-    /** 延迟天数上限（负数=提前量，自然日粒度） */
-    private static final int LAG_LIMIT = 365;
+    /** 延迟天数上限（负数=提前量，自然日粒度；Excel 导入校验复用） */
+    public static final int LAG_LIMIT = 365;
 
     /** 工期上限（自然日含首日） */
     public static final int DURATION_LIMIT = 3650;

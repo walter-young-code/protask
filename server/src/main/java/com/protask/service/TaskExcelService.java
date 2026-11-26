@@ -51,15 +51,18 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
  * 任务 Excel(.xlsx) 导入导出：导出列按属性模板顺序（标题领头，WBS 项目另含 WBS编码/工期/里程碑/前置任务列，
  * 自定义属性按模板顺序成列，摘要行卷算工期/起止日期）。
  * 导出需查看权限、不设 WBS 门禁；导入仅新建任务，先全量校验后单事务写入，
- * 层级由 WBS 编码前缀推导（1.1.2 → 父为 1.1），依赖仅 FS、lag=0。自定义属性列不参与导入。
+ * 层级由 WBS 编码前缀推导（1.1.2 → 父为 1.1），依赖按「WBS编码[类型][±延迟]」记号还原（如 2.1.1SS+2，缺省 FS/0）。
+ * 自定义属性列不参与导入。
  */
 @Service
 @RequiredArgsConstructor
@@ -92,6 +95,9 @@ public class TaskExcelService {
     private static final int MAX_ROWS = 2000;
     private static final long MAX_FILE_SIZE = 10L * 1024 * 1024;
     private static final Pattern WBS_PATTERN = Pattern.compile("\\d+(\\.\\d+)*");
+    /** 前置任务记号：WBS编码 + 可选类型(FS/SS/FF/SF，大小写不限) + 可选延迟(±自然日，可带 d 后缀)，如 2.1.1SS+2 */
+    private static final Pattern PRED_TOKEN_PATTERN = Pattern.compile(
+            "^(\\d+(?:\\.\\d+)*)(?:([FfSs][FfSs])([+-]\\d+)[dD]?|([FfSs][FfSs])|([+-]\\d+)[dD]?)?$");
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final BlockMapper blockMapper;
@@ -125,14 +131,15 @@ public class TaskExcelService {
         JsonNode statusProp = propById(template, "status");
         JsonNode priorityProp = propById(template, "priority");
         Map<Long, String> nicknames = assigneeNicknames(cards, memberPropIds(template));
-        // 依赖列：successor → 其 predecessor 的 WBS 编码列表
+        // 依赖列：successor → 其 predecessor 的「WBS编码[类型][±延迟]」记号列表
         Map<Long, List<String>> predsBySuccessor = new HashMap<>();
         if (hasWbs) {
             for (TaskDependency dep : dependencyMapper.selectList(new LambdaQueryWrapper<TaskDependency>()
                     .eq(TaskDependency::getProjectId, projectId))) {
                 String predWbs = wbs.get(dep.getPredecessorId());
                 if (predWbs != null) {
-                    predsBySuccessor.computeIfAbsent(dep.getSuccessorId(), k -> new ArrayList<>()).add(predWbs);
+                    predsBySuccessor.computeIfAbsent(dep.getSuccessorId(), k -> new ArrayList<>())
+                            .add(dependencyToken(predWbs, dep));
                 }
             }
         }
@@ -263,7 +270,8 @@ public class TaskExcelService {
 
     /**
      * 导入 Excel 仅新建任务：先全量逐行校验（errors 非空则整体不写入），
-     * 通过后按行序插入卡片，再按 WBS 前缀回写父子与排序，最后建立 FS 依赖。
+     * 通过后按行序插入卡片（含显式工期），再按 WBS 前缀回写父子与排序，
+     * 最后按「WBS编码[类型][±延迟]」记号建立依赖（缺省 FS/0）。
      */
     @Transactional(rollbackFor = Exception.class)
     public TaskImportResultVO importExcel(Long userId, Long projectId, MultipartFile file) {
@@ -352,7 +360,7 @@ public class TaskExcelService {
         boolean any = false;
         for (Map.Entry<Col, Integer> entry : colIndex.entrySet()) {
             Col col = entry.getKey();
-            if (!hasWbs && (col == Col.WBS || col == Col.MILESTONE || col == Col.PREDECESSORS)) {
+            if (!hasWbs && (col == Col.WBS || col == Col.DURATION || col == Col.MILESTONE || col == Col.PREDECESSORS)) {
                 continue;
             }
             String text = cellText(row.getCell(entry.getValue()));
@@ -362,6 +370,7 @@ public class TaskExcelService {
             switch (col) {
                 case WBS -> parsed.wbs = text;
                 case TITLE -> parsed.title = text;
+                case DURATION -> parsed.durationText = text;
                 case MILESTONE -> parsed.milestoneText = text;
                 case PREDECESSORS -> parsed.predecessorsText = text;
                 case STATUS -> parsed.statusText = text;
@@ -429,6 +438,14 @@ public class TaskExcelService {
             }
             row.startDate = parseDateCell(row.startText, header(Col.START_DATE, en), row.rowNum, result);
             row.dueDate = parseDateCell(row.dueText, header(Col.DUE_DATE, en), row.rowNum, result);
+            if (hasWbs && row.durationText != null && !row.durationText.isEmpty()) {
+                Integer days = parseDuration(row.durationText);
+                if (days == null || days < 0 || days > GanttProjectService.DURATION_LIMIT) {
+                    error(result, row.rowNum, "excel.badDuration", row.durationText, GanttProjectService.DURATION_LIMIT);
+                } else {
+                    row.durationDays = days;
+                }
+            }
             if (hasWbs && row.milestoneText != null && !row.milestoneText.isEmpty()) {
                 Boolean milestone = parseYesNo(row.milestoneText);
                 if (milestone == null) {
@@ -439,21 +456,33 @@ public class TaskExcelService {
             }
             if (hasWbs && row.predecessorsText != null && !row.predecessorsText.isEmpty()) {
                 String nodeKey = row.wbs != null && !row.wbs.isEmpty() ? row.wbs : "row:" + row.rowNum;
-                for (String code : row.predecessorsText.split("[;；]")) {
-                    String pred = code.trim();
-                    if (pred.isEmpty() || row.predecessors.contains(pred)) {
+                for (String token : row.predecessorsText.split("[;；]")) {
+                    String text = token.trim();
+                    if (text.isEmpty()) {
                         continue;
                     }
-                    if (pred.equals(row.wbs)) {
+                    ParsedPred pred = parsePredecessor(text);
+                    if (pred == null) {
+                        error(result, row.rowNum, "excel.predInvalid", text);
+                        continue;
+                    }
+                    if (pred.lag < -GanttProjectService.LAG_LIMIT || pred.lag > GanttProjectService.LAG_LIMIT) {
+                        error(result, row.rowNum, "excel.predLagInvalid", text, GanttProjectService.LAG_LIMIT);
+                        continue;
+                    }
+                    if (row.predecessors.stream().anyMatch(p -> p.code.equals(pred.code))) {
+                        continue;
+                    }
+                    if (pred.code.equals(row.wbs)) {
                         error(result, row.rowNum, "excel.predSelf");
                         continue;
                     }
-                    if (!codes.contains(pred)) {
-                        error(result, row.rowNum, "excel.predNotFound", pred);
+                    if (!codes.contains(pred.code)) {
+                        error(result, row.rowNum, "excel.predNotFound", pred.code);
                         continue;
                     }
                     row.predecessors.add(pred);
-                    edges.computeIfAbsent(pred, k -> new ArrayList<>()).add(nodeKey);
+                    edges.computeIfAbsent(pred.code, k -> new ArrayList<>()).add(nodeKey);
                 }
             }
         }
@@ -511,6 +540,15 @@ public class TaskExcelService {
             maxSort.merge(card.getParentTaskId(), card.getSortOrder() == null ? 0 : card.getSortOrder(), Math::max);
         }
         Map<String, Long> idByWbs = new HashMap<>();
+        // 文件内父编码集合：用于跳过摘要行显式工期（摘要工期按子孙卷算）
+        Set<String> parentCodes = new HashSet<>();
+        if (hasWbs) {
+            for (ParsedRow row : rows) {
+                if (row.wbs != null && row.wbs.contains(".")) {
+                    parentCodes.add(row.wbs.substring(0, row.wbs.lastIndexOf('.')));
+                }
+            }
+        }
         List<Block> inserted = new ArrayList<>();
         for (ParsedRow row : rows) {
             Block card = new Block();
@@ -519,6 +557,11 @@ public class TaskExcelService {
             card.setType(BlockTypes.CARD);
             card.setTitle(row.title);
             card.setMilestone(hasWbs && row.milestone);
+            // 显式工期仅写叶子普通任务（里程碑恒 0、摘要行卷算、0=未显式指定）
+            if (hasWbs && row.durationDays != null && row.durationDays > 0 && !row.milestone
+                    && !parentCodes.contains(row.wbs)) {
+                card.setDurationDays(row.durationDays);
+            }
             card.setCreatedBy(userId);
             card.setModifiedBy(userId);
             Map<String, Object> props = new HashMap<>();
@@ -558,13 +601,13 @@ public class TaskExcelService {
             card.setSortOrder(maxSort.merge(parentId, 1, Integer::sum));
             blockMapper.updateById(card);
         }
-        // 依赖：前置 WBS → 新任务 id，FS/lag=0
+        // 依赖：前置 WBS → 新任务 id，类型/延迟按记号还原（缺省 FS/0）
         int depCount = 0;
         if (hasWbs) {
             for (int i = 0; i < rows.size(); i++) {
                 ParsedRow row = rows.get(i);
-                for (String pred : row.predecessors) {
-                    Long predecessorId = idByWbs.get(pred);
+                for (ParsedPred pred : row.predecessors) {
+                    Long predecessorId = idByWbs.get(pred.code);
                     if (predecessorId == null) {
                         continue;
                     }
@@ -572,8 +615,8 @@ public class TaskExcelService {
                     dep.setProjectId(projectId);
                     dep.setPredecessorId(predecessorId);
                     dep.setSuccessorId(inserted.get(i).getId());
-                    dep.setType("FS");
-                    dep.setLag(0);
+                    dep.setType(pred.type);
+                    dep.setLag(pred.lag);
                     dep.setCreateAt(LocalDateTime.now());
                     dependencyMapper.insert(dep);
                     depCount++;
@@ -590,6 +633,8 @@ public class TaskExcelService {
         int rowNum;
         String wbs;
         String title;
+        String durationText;
+        Integer durationDays;
         String milestoneText;
         String predecessorsText;
         String statusText;
@@ -603,7 +648,36 @@ public class TaskExcelService {
         LocalDate startDate;
         LocalDate dueDate;
         boolean milestone;
-        List<String> predecessors = new ArrayList<>();
+        List<ParsedPred> predecessors = new ArrayList<>();
+    }
+
+    /** 解析后的前置任务记号：编码 + 依赖类型 + 延迟（自然日，负=提前量） */
+    private record ParsedPred(String code, String type, int lag) {
+    }
+
+    /** 工期列解析：仅接受非负整数文本，非法返回 null */
+    private Integer parseDuration(String text) {
+        try {
+            return Integer.parseInt(text);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 前置任务记号解析：WBS编码[类型][±延迟]，类型大小写不限，延迟可带 d 后缀；
+     * 无类型缺省 FS、无延迟缺省 0；格式不符返回 null。
+     */
+    private ParsedPred parsePredecessor(String token) {
+        Matcher matcher = PRED_TOKEN_PATTERN.matcher(token);
+        if (!matcher.matches()) {
+            return null;
+        }
+        String type = matcher.group(2) != null ? matcher.group(2) : matcher.group(4);
+        String lagText = matcher.group(3) != null ? matcher.group(3) : matcher.group(5);
+        return new ParsedPred(matcher.group(1),
+                (type == null ? "FS" : type).toUpperCase(Locale.ROOT),
+                lagText == null ? 0 : Integer.parseInt(lagText));
     }
 
     private void error(TaskImportResultVO result, int row, String messageKey, Object... args) {
@@ -669,6 +743,23 @@ public class TaskExcelService {
             return card.getDurationDays();
         }
         return start != null && end != null ? (int) ChronoUnit.DAYS.between(start, end) + 1 : null;
+    }
+
+    /**
+     * 依赖导出记号：WBS编码 + 非 FS 类型 + 非零延迟，如 1.1SS+2 / 1.1FS-3；
+     * 纯 FS 且零延迟只写编码（兼容存量文件与人工手写）。
+     */
+    private String dependencyToken(String wbs, TaskDependency dep) {
+        String type = dep.getType() == null ? "FS" : dep.getType();
+        int lag = dep.getLag() == null ? 0 : dep.getLag();
+        StringBuilder token = new StringBuilder(wbs);
+        if (!"FS".equals(type) || lag != 0) {
+            token.append(type);
+        }
+        if (lag != 0) {
+            token.append(lag > 0 ? "+" : "").append(lag);
+        }
+        return token.toString();
     }
 
     /** 动态属性值 → 导出文本：select/multiSelect 解析选项，member 解析昵称，checkbox 是/否，date 取前 10 位 */

@@ -183,7 +183,7 @@ export default {
     downloadTemplate: 'Download template',
     uploadTip: 'Drop the .xlsx file here, or click to select',
     uploadHint:
-      'Creates new tasks only; existing tasks are never modified. Up to 2000 rows per import. For WBS projects, hierarchy is restored from the WBS column (e.g. parent of 1.1 is 1); list predecessor WBS codes separated by semicolons.',
+      'Creates new tasks only; existing tasks are never modified. Up to 2000 rows per import. For WBS projects, hierarchy is restored from the WBS column (e.g. parent of 1.1 is 1); list predecessor WBS codes separated by semicolons, optionally with dependency type and lag such as 1.1SS+2.',
     import: 'Import',
     exportSuccess: 'Excel exported',
     importSuccess: 'Imported {created} tasks and {deps} dependencies',

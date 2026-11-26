@@ -53,8 +53,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * TaskExcelService 单元测试：按模板顺序导出（含自定义属性列）、WBS 工期/摘要卷算、
- * 内置字段映射导入、WBS 前缀推导层级、FS 依赖建立、全量校验失败整体不写入、非 WBS 项目忽略层级列。
+ * TaskExcelService 单元测试：按模板顺序导出（含自定义属性列）、WBS 工期/摘要卷算、依赖类型与延迟记号导出、
+ * 内置字段映射导入（含显式工期）、WBS 前缀推导层级、依赖类型/延迟记号还原、全量校验失败整体不写入、非 WBS 项目忽略层级列。
  * 采用 LENIENT 桩策略，因服务内部多次复用 selectById/selectList。
  */
 @ExtendWith(MockitoExtension.class)
@@ -197,6 +197,9 @@ class TaskExcelServiceTest {
 
     private static final String[] WBS_HEADERS =
             {"WBS编码", "标题", "里程碑", "前置任务", "状态", "优先级", "负责人", "开始日期", "截止日期"};
+
+    private static final String[] WBS_HEADERS_DURATION =
+            {"WBS编码", "标题", "工期", "里程碑", "前置任务", "状态", "优先级", "负责人", "开始日期", "截止日期"};
 
     // ---------- 导出 ----------
 
@@ -437,6 +440,45 @@ class TaskExcelServiceTest {
     }
 
     @Test
+    void exportWbsDependencyTypeAndLagTokens() throws Exception {
+        Project project = project(WBS_TEMPLATE);
+        when(ganttProjectService.hasWbs(project)).thenReturn(true);
+        Block root = card(11L, null, 1);
+        Block childA = card(12L, 11L, 1);
+        Block childB = card(13L, 11L, 2);
+        GanttProjectService.TaskTree tree = new GanttProjectService.TaskTree(
+                List.of(root, childA, childB),
+                Map.of(11L, "1", 12L, "1.1", 13L, "1.2"),
+                Map.of(11L, 2, 12L, 0, 13L, 0),
+                Map.of(11L, 0, 12L, 1, 13L, 1));
+        when(ganttProjectService.buildTree(PROJECT_ID)).thenReturn(tree);
+        // 1.1SS+2 → 1.2；1.2FS-3 → 1.1；1.1 → 1（纯 FS 零延迟 → 裸编码）
+        TaskDependency ss = new TaskDependency();
+        ss.setPredecessorId(12L);
+        ss.setSuccessorId(13L);
+        ss.setType("SS");
+        ss.setLag(2);
+        TaskDependency fs = new TaskDependency();
+        fs.setPredecessorId(13L);
+        fs.setSuccessorId(12L);
+        fs.setType("FS");
+        fs.setLag(-3);
+        TaskDependency plain = new TaskDependency();
+        plain.setPredecessorId(12L);
+        plain.setSuccessorId(11L);
+        when(dependencyMapper.selectList(any())).thenReturn(List.of(ss, fs, plain));
+
+        byte[] xlsx = service.exportExcel(USER_ID, PROJECT_ID);
+        try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(xlsx))) {
+            Sheet sheet = wb.getSheet("Tasks");
+            // 树序：root(1) / childA(1.1) / childB(1.2)；纯 FS 零延迟 → 裸编码
+            assertEquals("1.1", sheet.getRow(1).getCell(4).getStringCellValue());
+            assertEquals("1.2FS-3", sheet.getRow(2).getCell(4).getStringCellValue());
+            assertEquals("1.1SS+2", sheet.getRow(3).getCell(4).getStringCellValue());
+        }
+    }
+
+    @Test
     void exportRequiresViewPermission() {
         project(WBS_TEMPLATE);
         doThrow(new BusinessException(com.protask.common.ResultCode.FORBIDDEN))
@@ -487,6 +529,80 @@ class TaskExcelServiceTest {
         assertEquals(103L, deps.getValue().getSuccessorId());
         assertEquals("FS", deps.getValue().getType());
         verify(permissionService).checkPermission(USER_ID, PROJECT_ID, ProjectPermission.MANAGE_PROJECT_CARDS);
+    }
+
+    @Test
+    void importStoresExplicitDurationForLeafTasksOnly() throws Exception {
+        Project project = project(WBS_TEMPLATE);
+        when(ganttProjectService.hasWbs(project)).thenReturn(true);
+        MockMultipartFile file = workbook(WBS_HEADERS_DURATION, new String[][]{
+                {"1", "摘要", "5", "否", null, null, null, null, null, null},
+                {"1.1", "叶子A", "3", "否", null, null, null, null, null, null},
+                {"1.2", "叶子B", "2", "是", null, null, null, null, null, null},
+        });
+
+        TaskImportResultVO result = service.importExcel(USER_ID, PROJECT_ID, file);
+
+        assertTrue(result.getErrors().isEmpty());
+        assertEquals(3, result.getCreated());
+        ArgumentCaptor<Block> updates = ArgumentCaptor.forClass(Block.class);
+        verify(blockMapper, org.mockito.Mockito.times(3)).updateById(updates.capture());
+        List<Block> updated = updates.getAllValues();
+        // 摘要行不写显式工期（按子孙卷算）；叶子普通任务写入；里程碑恒 0 不写
+        assertNull(updated.get(0).getDurationDays());
+        assertEquals(3, updated.get(1).getDurationDays());
+        assertNull(updated.get(2).getDurationDays());
+    }
+
+    @Test
+    void importPreservesDependencyTypeAndLag() throws Exception {
+        Project project = project(WBS_TEMPLATE);
+        when(ganttProjectService.hasWbs(project)).thenReturn(true);
+        MockMultipartFile file = workbook(WBS_HEADERS_DURATION, new String[][]{
+                {"1", "任务A", null, null, null, null, null, null, null, null},
+                {"2", "任务B", null, null, "1SS+2", null, null, null, null, null},
+                {"3", "任务C", null, null, "1", null, null, null, null, null},
+                {"4", "任务D", null, null, "2FF-3;3+5", null, null, null, null, null},
+        });
+
+        TaskImportResultVO result = service.importExcel(USER_ID, PROJECT_ID, file);
+
+        assertTrue(result.getErrors().isEmpty());
+        assertEquals(4, result.getCreated());
+        assertEquals(4, result.getDependencyCount());
+        ArgumentCaptor<TaskDependency> deps = ArgumentCaptor.forClass(TaskDependency.class);
+        verify(dependencyMapper, org.mockito.Mockito.times(4)).insert(deps.capture());
+        List<TaskDependency> inserted = deps.getAllValues();
+        assertEquals(101L, inserted.get(0).getPredecessorId());
+        assertEquals(102L, inserted.get(0).getSuccessorId());
+        assertEquals("SS", inserted.get(0).getType());
+        assertEquals(2, inserted.get(0).getLag());
+        // 裸编码 → FS/0
+        assertEquals("FS", inserted.get(1).getType());
+        assertEquals(0, inserted.get(1).getLag());
+        // FF-3 与无类型 +5（缺省 FS）
+        assertEquals("FF", inserted.get(2).getType());
+        assertEquals(-3, inserted.get(2).getLag());
+        assertEquals("FS", inserted.get(3).getType());
+        assertEquals(5, inserted.get(3).getLag());
+    }
+
+    @Test
+    void importRejectsInvalidDurationAndPredTokens() throws Exception {
+        Project project = project(WBS_TEMPLATE);
+        when(ganttProjectService.hasWbs(project)).thenReturn(true);
+        MockMultipartFile file = workbook(WBS_HEADERS_DURATION, new String[][]{
+                {"1", "坏工期", "3天", null, null, null, null, null, null, null},
+                {"2", "坏依赖", null, null, "1XX", null, null, null, null, null},
+                {"3", "坏延迟", null, null, "1FS+999", null, null, null, null, null},
+        });
+
+        TaskImportResultVO result = service.importExcel(USER_ID, PROJECT_ID, file);
+
+        assertEquals(0, result.getCreated());
+        assertEquals(3, result.getErrors().size());
+        verify(blockMapper, never()).insert(any(Block.class));
+        verify(dependencyMapper, never()).insert(any(TaskDependency.class));
     }
 
     @Test

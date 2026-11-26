@@ -180,7 +180,7 @@ export default {
     downloadTemplate: '下载导入模板',
     uploadTip: '将 .xlsx 文件拖到此处，或点击选择文件',
     uploadHint:
-      '仅新建任务，不修改已有任务；单次最多 2000 行。WBS 项目按「WBS编码」列自动还原层级（如 1.1 的父任务为 1），前置任务列填文件内 WBS 编码（分号分隔）。',
+      '仅新建任务，不修改已有任务；单次最多 2000 行。WBS 项目按「WBS编码」列自动还原层级（如 1.1 的父任务为 1），前置任务列填文件内 WBS 编码（分号分隔，可带依赖类型与延迟，如 1.1SS+2）。',
     import: '开始导入',
     exportSuccess: 'Excel 导出成功',
     importSuccess: '导入成功：新建 {created} 个任务、{deps} 条依赖',
